@@ -129,14 +129,11 @@ export const useConfigStore = defineStore("config", () => {
       loading.value = true;
       error.value = null;
       try {
-        const [cfg, normModels] = await Promise.all([
-          api.getConfig(),
-          api.getConfigModels(),
-        ]);
+        const cfg = await api.getConfig();
         if (!loadIsCurrent(generation, context)) return;
         const normalized = normalizeAppConfig(cfg);
         draft.value = cloneConfig(normalized);
-        models.value = normalizeModels(normalized.models, normModels);
+        models.value = normalizeModels(normalized.models);
         knownProviders.value = new Set(Object.keys(normalized.providers));
         maskedApiKeys.value = captureMaskedApiKeys(normalized.providers);
         baseline.value = JSON.stringify(buildPayload());
@@ -334,6 +331,20 @@ export const useConfigStore = defineStore("config", () => {
       : "请先修正表单错误";
   }
 
+  /** Acknowledge persisted keys without replacing edits made while PUT was pending. */
+  function acceptSavedConfig(payload: AppConfig): string {
+    const savedKeys: Record<string, string> = {};
+    const providers: AppConfig["providers"] = {};
+    for (const [name, provider] of Object.entries(payload.providers)) {
+      savedKeys[name] = provider.api_key || maskedApiKeys.value[name] || "";
+      providers[name] = { ...provider, api_key: "" };
+    }
+    knownProviders.value = new Set(Object.keys(payload.providers));
+    maskedApiKeys.value = savedKeys;
+    baseline.value = JSON.stringify({ ...payload, providers });
+    return baseline.value;
+  }
+
   /** Save the current snapshot, reporting whether the post-write reload succeeded. */
   async function save(): Promise<boolean> {
     if (saving.value) {
@@ -344,13 +355,12 @@ export const useConfigStore = defineStore("config", () => {
       throw new Error(validationFailureMessage("save"));
     }
     const payload = buildPayload();
-    const payloadSnapshot = JSON.stringify(payload);
     invalidateLoad();
     saving.value = true;
     error.value = null;
     try {
       await api.putConfig(payload);
-      baseline.value = payloadSnapshot;
+      const payloadSnapshot = acceptSavedConfig(payload);
       if (loadContext() === payloadSnapshot) {
         try {
           await startLoad(true);
@@ -386,54 +396,54 @@ export const useConfigStore = defineStore("config", () => {
     if (dirty.value) {
       throw new Error("配置页有未保存更改，请先保存或刷新后再切换故障转移");
     }
-    if (!draft.value) {
-      await load();
-    }
-    if (!draft.value) {
-      throw new Error("配置未加载");
-    }
-    if (draft.value.router.mode === next) return true;
-
     saving.value = true;
-    const previousError = error.value;
-    const previousFieldErrors = fieldErrors.value;
-    error.value = null;
-    const prev = draft.value.router.mode;
-    draft.value = {
-      ...draft.value,
-      router: { ...draft.value.router, mode: next },
-    };
     try {
-      if (!validate()) {
-        draft.value = {
-          ...draft.value,
-          router: { ...draft.value.router, mode: prev },
-        };
-        throw new Error(validationFailureMessage("switch"));
+      // The editor may have been unmounted while another client changed the file.
+      // Reserve the save slot, then read a fresh snapshot before choosing a PUT.
+      await startLoad(true);
+      if (dirty.value) {
+        throw new Error("配置页有未保存更改，请先保存或刷新后再切换故障转移");
       }
-      const payload = buildPayload();
-      const payloadSnapshot = JSON.stringify(payload);
-      invalidateLoad();
-      await api.putConfig(payload);
-      baseline.value = payloadSnapshot;
-      if (loadContext() === payloadSnapshot) {
-        try {
-          await startLoad(true);
-        } catch {
-          return false;
+      if (!draft.value) {
+        throw new Error("配置未加载");
+      }
+      if (draft.value.router.mode === next) return true;
+
+      const previousError = error.value;
+      const previousFieldErrors = fieldErrors.value;
+      error.value = null;
+      const prev = draft.value.router.mode;
+      draft.value = {
+        ...draft.value,
+        router: { ...draft.value.router, mode: next },
+      };
+      try {
+        if (!validate()) {
+          throw new Error(validationFailureMessage("switch"));
         }
+        const payload = buildPayload();
+        invalidateLoad();
+        await api.putConfig(payload);
+        const payloadSnapshot = acceptSavedConfig(payload);
+        if (loadContext() === payloadSnapshot) {
+          try {
+            await startLoad(true);
+          } catch {
+            return false;
+          }
+        }
+        return true;
+      } catch (err) {
+        if (draft.value && draft.value.router.mode === next) {
+          draft.value = {
+            ...draft.value,
+            router: { ...draft.value.router, mode: prev },
+          };
+        }
+        error.value = previousError;
+        fieldErrors.value = previousFieldErrors;
+        throw err;
       }
-      return true;
-    } catch (err) {
-      if (draft.value && draft.value.router.mode === next) {
-        draft.value = {
-          ...draft.value,
-          router: { ...draft.value.router, mode: prev },
-        };
-      }
-      error.value = previousError;
-      fieldErrors.value = previousFieldErrors;
-      throw err;
     } finally {
       saving.value = false;
     }

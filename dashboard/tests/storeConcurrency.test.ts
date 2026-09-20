@@ -256,6 +256,87 @@ describe("request generations", () => {
     expect(store.loading).toBe(false);
   });
 
+  test("calls publishes slow responses despite overlapping polls and initial loading", async () => {
+    const requests = [deferred<Response>(), deferred<Response>()];
+    let requestCount = 0;
+    globalThis.fetch = (() => requests[requestCount++].promise) as typeof fetch;
+    const store = useCallsStore();
+
+    for (let batch = 0; batch < 2; batch += 1) {
+      const pending = [store.fetchList({ page: 1, size: 1 }, batch > 0)];
+      for (let tick = 0; tick < 3; tick += 1) {
+        pending.push(store.fetchList({ size: 1, page: 1 }, true));
+      }
+      expect(requestCount).toBe(batch + 1);
+      expect(store.loading).toBe(batch === 0);
+      requests[batch].resolve(jsonResponse({ ...callsPage(1), total: batch + 10 }));
+      await Promise.all(pending);
+      expect(store.page?.total).toBe(batch + 10);
+      expect(store.loading).toBe(false);
+    }
+  });
+
+  test("a manual calls refresh joining a silent poll still reports failure", async () => {
+    const response = deferred<Response>();
+    let requestCount = 0;
+    globalThis.fetch = (() => {
+      requestCount += 1;
+      return response.promise;
+    }) as typeof fetch;
+    const store = useCallsStore();
+    const poll = store.fetchList({ page: 1 }, true);
+    const manual = store.fetchList({ page: 1 });
+    expect(requestCount).toBe(1);
+    expect(store.loading).toBe(true);
+    const manualResult = manual.catch((error: unknown) => error);
+    response.resolve(jsonResponse({ detail: "slow poll failed" }, 503));
+    const manualError = await manualResult;
+    expect(manualError).toBeInstanceOf(Error);
+    expect((manualError as Error).message).toBe("slow poll failed");
+    await poll;
+    expect(store.error).toBe("slow poll failed");
+    expect(store.loading).toBe(false);
+  });
+
+  test("metrics publishes slow batches while repeated polls share the current range", async () => {
+    const requests = Array.from({ length: 10 }, () => deferred<Response>());
+    let requestCount = 0;
+    globalThis.fetch = (() => requests[requestCount++].promise) as typeof fetch;
+    const store = useMetricsStore();
+
+    for (let batch = 0; batch < 2; batch += 1) {
+      const pending = [store.refresh(batch > 0)];
+      for (let tick = 0; tick < 3; tick += 1) pending.push(store.refresh(true));
+      expect(requestCount).toBe((batch + 1) * 5);
+      metricBatch(batch + 10).forEach((response, index) => {
+        requests[batch * 5 + index].resolve(response);
+      });
+      await Promise.all(pending);
+      expect(store.summary?.total_calls).toBe(batch + 10);
+      expect(store.loading).toBe(false);
+      expect(store.loadedOnce).toBe(true);
+    }
+  });
+
+  test("a manual metrics refresh joining a silent batch still reports failure", async () => {
+    const requests = Array.from({ length: 5 }, () => deferred<Response>());
+    let requestCount = 0;
+    globalThis.fetch = (() => requests[requestCount++].promise) as typeof fetch;
+    const store = useMetricsStore();
+    const poll = store.refresh(true);
+    const manual = store.refresh();
+    expect(requestCount).toBe(5);
+    expect(store.loading).toBe(true);
+    const manualResult = manual.catch((error: unknown) => error);
+    metricBatch(1, true).forEach((response, index) => requests[index].resolve(response));
+    const manualError = await manualResult;
+    expect(manualError).toBeInstanceOf(Error);
+    expect((manualError as Error).message).toBe("metrics-1-failed");
+    await poll;
+    expect(store.error).toBe("metrics-1-failed");
+    expect(store.loading).toBe(false);
+  });
+
   test("metrics keeps the newest range when three batches finish newest-first", async () => {
     const requests = Array.from({ length: 15 }, () => deferred<Response>());
     let requestIndex = 0;
@@ -281,19 +362,71 @@ describe("request generations", () => {
     expect(store.loadedOnce).toBe(true);
   });
 
+  test.each(["load", "save", "mode"] as const)(
+    "config %s keeps providers and model references from one complete snapshot",
+    async (phase) => {
+      function snapshot(providerName: string): AppConfig {
+        const config = validConfig();
+        config.providers = { [providerName]: config.providers.provider };
+        config.models.virtual.models = [{ provider: providerName, model: "real" }];
+        return config;
+      }
+
+      const initial = snapshot("initial-provider");
+      const updated = snapshot("updated-provider");
+      const unrelatedModels = snapshot("unrelated-provider").models;
+      let backend = initial;
+      let configGets = 0;
+      let modelGets = 0;
+      const puts: AppConfig[] = [];
+      globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+        const path = String(input);
+        if (path === "/api/config" && init?.method === "PUT") {
+          const payload = JSON.parse(String(init.body)) as AppConfig;
+          puts.push(payload);
+          backend = phase === "save" ? updated : payload;
+          return Promise.resolve(jsonResponse({ status: "ok" }));
+        }
+        if (path === "/api/config") {
+          configGets += 1;
+          if (phase === "mode" && configGets === 2) backend = updated;
+          return Promise.resolve(jsonResponse(backend));
+        }
+        if (path === "/api/config/models") {
+          modelGets += 1;
+          // An external write between separate GETs yields a different generation.
+          return Promise.resolve(jsonResponse(
+            phase === "load" || configGets > 1 ? unrelatedModels : initial.models,
+          ));
+        }
+        throw new Error(`Unexpected request: ${path}`);
+      }) as typeof fetch;
+      const store = useConfigStore();
+      await store.load();
+      if (phase === "save") {
+        store.draft!.server.host = "saved-host";
+        await expect(store.save()).resolves.toBe(true);
+      } else if (phase === "mode") {
+        await expect(store.setRouterMode("sticky")).resolves.toBe(true);
+        expect(puts[0].models.virtual.models).toEqual(updated.models.virtual.models);
+        expect(puts[0].router.mode).toBe("sticky");
+      }
+
+      expect(store.models.virtual.models).toEqual(backend.models.virtual.models);
+      expect(Object.keys(store.draft!.providers)).toEqual(Object.keys(backend.providers));
+      expect(store.validate()).toBe(true);
+      expect(store.dirty).toBe(false);
+      expect(modelGets).toBe(0);
+      expect(configGets).toBe(phase === "load" ? 1 : phase === "save" ? 2 : 3);
+      expect(puts).toHaveLength(phase === "load" ? 0 : 1);
+    },
+  );
+
   test("config load does not replace a draft edited after the request starts", async () => {
     const refreshConfig = deferred<Response>();
-    const refreshModels = deferred<Response>();
     let configGets = 0;
-    let modelGets = 0;
     globalThis.fetch = ((input: RequestInfo | URL) => {
       const path = String(input);
-      if (path === "/api/config/models") {
-        modelGets += 1;
-        return modelGets === 1
-          ? Promise.resolve(jsonResponse(virtualModels()))
-          : refreshModels.promise;
-      }
       if (path === "/api/config") {
         configGets += 1;
         return configGets === 1
@@ -308,7 +441,6 @@ describe("request generations", () => {
     const refresh = store.load();
     store.draft!.server.host = "locally-edited";
     refreshConfig.resolve(jsonResponse(validConfig("remote-update")));
-    refreshModels.resolve(jsonResponse(virtualModels()));
     await refresh;
 
     expect(store.draft?.server.host).toBe("locally-edited");
@@ -319,19 +451,11 @@ describe("request generations", () => {
 
   test("config save starts a post-PUT load instead of reusing a pre-save request", async () => {
     const staleConfig = deferred<Response>();
-    const staleModels = deferred<Response>();
     const freshConfig = deferred<Response>();
-    const freshModels = deferred<Response>();
     let configGets = 0;
-    let modelGets = 0;
     let putBody: AppConfig | null = null;
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
-      if (path === "/api/config/models") {
-        modelGets += 1;
-        if (modelGets === 1) return Promise.resolve(jsonResponse(virtualModels()));
-        return modelGets === 2 ? staleModels.promise : freshModels.promise;
-      }
       if (path === "/api/config" && init?.method === "PUT") {
         putBody = JSON.parse(String(init.body)) as AppConfig;
         return Promise.resolve(jsonResponse({ status: "ok" }));
@@ -355,13 +479,10 @@ describe("request generations", () => {
 
     expect(putBody?.server.host).toBe("saved-value");
     expect(configGets).toBe(3);
-    expect(modelGets).toBe(3);
     freshConfig.resolve(jsonResponse(validConfig("saved-value")));
-    freshModels.resolve(jsonResponse(virtualModels()));
     await save;
 
     staleConfig.resolve(jsonResponse(validConfig("stale-value")));
-    staleModels.resolve(jsonResponse(virtualModels()));
     await preSaveLoad;
 
     expect(store.draft?.server.host).toBe("saved-value");
@@ -405,6 +526,73 @@ describe("request generations", () => {
     expect(store.saving).toBe(false);
   });
 
+  test("a newly saved provider can preserve its key after the reload fails", async () => {
+    const puts: AppConfig[] = [];
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        puts.push(JSON.parse(String(init.body)) as AppConfig);
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      if (puts.length) {
+        return Promise.resolve(jsonResponse({ detail: "post-save reload failed" }, 502));
+      }
+      return Promise.resolve(jsonResponse(
+        String(input).endsWith("/models") ? virtualModels() : validConfig(),
+      ));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    await store.load();
+    store.addProvider("added");
+    store.draft!.providers.added.base_url = "https://added.test";
+    store.draft!.providers.added.api_key = "new-provider-secret";
+
+    await expect(store.save()).resolves.toBe(false);
+    expect(store.dirty).toBe(false);
+    expect(store.buildPayload().providers.added.api_key).toBe("");
+    store.draft!.providers.added.api_key = "";
+    store.draft!.server.host = "next-edit";
+    await expect(store.save()).resolves.toBe(false);
+
+    expect(puts).toHaveLength(2);
+    expect(puts[0].providers.added.api_key).toBe("new-provider-secret");
+    expect(puts[1].providers.added.api_key).toBe("");
+    expect(store.fieldErrors).toEqual({});
+    expect(store.dirty).toBe(false);
+  });
+
+  test("acknowledging saved keys preserves newer edits and omits already persisted secrets", async () => {
+    const put = deferred<Response>();
+    let configGets = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") return put.promise;
+      if (String(input).endsWith("/models")) {
+        return Promise.resolve(jsonResponse(virtualModels()));
+      }
+      configGets += 1;
+      return Promise.resolve(jsonResponse(validConfig()));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    await store.load();
+    store.addProvider("added");
+    store.draft!.providers.added.base_url = "https://added.test";
+    store.draft!.providers.added.api_key = "saved-added-secret";
+    store.draft!.providers.provider.api_key = "saved-original-secret";
+
+    const save = store.save();
+    store.draft!.server.host = "newer-host";
+    store.draft!.providers.provider.api_key = "newer-original-secret";
+    put.resolve(jsonResponse({ status: "ok" }));
+    await save;
+
+    expect(configGets).toBe(1);
+    expect(store.draft?.server.host).toBe("newer-host");
+    expect(store.buildPayload().providers.provider.api_key).toBe("newer-original-secret");
+    expect(store.buildPayload().providers.added.api_key).toBe("");
+    store.draft!.providers.added.api_key = "";
+    expect(store.validate()).toBe(true);
+    expect(store.dirty).toBe(true);
+  });
+
   test("mode switch keeps the persisted mode when reconciliation fails", async () => {
     let configGets = 0;
     let putMode: string | null = null;
@@ -420,7 +608,7 @@ describe("request generations", () => {
       if (path === "/api/config") {
         configGets += 1;
         return Promise.resolve(
-          configGets === 1
+          configGets <= 2
             ? jsonResponse(validConfig())
             : jsonResponse({ detail: "mode reconciliation failed" }, 502),
         );
@@ -436,6 +624,148 @@ describe("request generations", () => {
     expect(store.draft?.router.mode).toBe("sticky");
     expect(store.dirty).toBe(false);
     expect(store.error).toContain("mode reconciliation failed");
+    expect(store.saving).toBe(false);
+  });
+
+  test("mode switch writes when only the cached editor already has the requested mode", async () => {
+    let backend = validConfig();
+    const puts: AppConfig[] = [];
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        backend = JSON.parse(String(init.body)) as AppConfig;
+        puts.push(backend);
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      return Promise.resolve(jsonResponse(
+        String(input).endsWith("/models") ? backend.models : backend,
+      ));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    const app = useAppStore();
+    await store.load();
+    backend.router.mode = "sticky";
+    await app.loadConfig(true);
+    expect(store.draft?.router.mode).toBe("failover");
+    expect(app.mode).toBe("sticky");
+
+    await expect(app.setMode("failover")).resolves.toBe(true);
+
+    expect(puts).toHaveLength(1);
+    expect(backend.router.mode).toBe("failover");
+    expect(app.mode).toBe("failover");
+    expect(store.saving).toBe(false);
+  });
+
+  test("mode switch preserves external settings absent from the cached editor", async () => {
+    let backend = validConfig();
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        backend = JSON.parse(String(init.body)) as AppConfig;
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      return Promise.resolve(jsonResponse(
+        String(input).endsWith("/models") ? backend.models : backend,
+      ));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    const app = useAppStore();
+    await store.load();
+    await app.loadConfig();
+    backend.providers.external = { ...backend.providers.provider };
+    backend.server.log_backup_count = 8;
+
+    await expect(app.setMode("sticky")).resolves.toBe(true);
+
+    expect(backend.router.mode).toBe("sticky");
+    expect(backend.providers.external).toBeDefined();
+    expect(backend.server.log_backup_count).toBe(8);
+    expect(store.dirty).toBe(false);
+  });
+
+  test("mode switch reserves saving while loading and preserves edits made during that load", async () => {
+    const freshConfig = deferred<Response>();
+    let configGets = 0;
+    let putCount = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putCount += 1;
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      if (String(input).endsWith("/models")) {
+        return Promise.resolve(jsonResponse(virtualModels()));
+      }
+      configGets += 1;
+      return configGets === 1
+        ? Promise.resolve(jsonResponse(validConfig()))
+        : freshConfig.promise;
+    }) as typeof fetch;
+    const store = useConfigStore();
+    await store.load();
+    const switching = store.setRouterMode("sticky").catch((error: unknown) => error);
+    expect(store.saving).toBe(true);
+    store.draft!.server.host = "edited-during-mode-load";
+    await expect(store.save()).rejects.toThrow("配置正在保存");
+    await expect(store.setRouterMode("sticky")).rejects.toThrow("配置正在保存");
+    freshConfig.resolve(jsonResponse(validConfig("remote-host")));
+    const switchError = await switching;
+
+    expect(switchError).toBeInstanceOf(Error);
+    expect((switchError as Error).message).toContain("未保存更改");
+    expect(putCount).toBe(0);
+    expect(store.draft?.server.host).toBe("edited-during-mode-load");
+    expect(store.draft?.router.mode).toBe("failover");
+    expect(store.dirty).toBe(true);
+    expect(store.saving).toBe(false);
+  });
+
+  test("mode switch refuses to write from its cache if the fresh read fails", async () => {
+    let configGets = 0;
+    let putCount = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putCount += 1;
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      if (String(input).endsWith("/models")) {
+        return Promise.resolve(jsonResponse(virtualModels()));
+      }
+      configGets += 1;
+      return Promise.resolve(configGets === 1
+        ? jsonResponse(validConfig())
+        : jsonResponse({ detail: "latest config unavailable" }, 503));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    await store.load();
+
+    await expect(store.setRouterMode("sticky")).rejects.toThrow("latest config unavailable");
+
+    expect(putCount).toBe(0);
+    expect(store.draft?.router.mode).toBe("failover");
+    expect(store.error).toBe("latest config unavailable");
+    expect(store.saving).toBe(false);
+  });
+
+  test("an already persisted mode needs no PUT after the fresh read and releases saving", async () => {
+    let backend = validConfig();
+    let putCount = 0;
+    globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        putCount += 1;
+        return Promise.resolve(jsonResponse({ status: "ok" }));
+      }
+      return Promise.resolve(jsonResponse(
+        String(input).endsWith("/models") ? backend.models : backend,
+      ));
+    }) as typeof fetch;
+    const store = useConfigStore();
+    await store.load();
+    backend = { ...backend, router: { ...backend.router, mode: "sticky" } };
+
+    await expect(store.setRouterMode("sticky")).resolves.toBe(true);
+
+    expect(putCount).toBe(0);
+    expect(store.draft?.router.mode).toBe("sticky");
+    expect(store.dirty).toBe(false);
     expect(store.saving).toBe(false);
   });
 
@@ -495,6 +825,7 @@ describe("request generations", () => {
 
     expect(store.saving).toBe(true);
     await expect(store.save()).rejects.toThrow("配置正在保存");
+    await expect(store.setRouterMode("sticky")).rejects.toThrow("配置正在保存");
     expect(putCount).toBe(1);
 
     put.resolve(jsonResponse({ status: "ok" }));

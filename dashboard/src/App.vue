@@ -20,7 +20,7 @@ const refresh = useRefreshStore();
 const route = useRoute();
 const router = useRouter();
 const { tick } = storeToRefs(refresh);
-let silentRefreshSeq = 0;
+let silentRefreshRunning = false;
 
 async function bootstrap() {
   app.initTheme();
@@ -30,29 +30,33 @@ async function bootstrap() {
 }
 
 async function silentRefresh() {
-  const seq = ++silentRefreshSeq;
-  let failed = false;
+  if (silentRefreshRunning) return;
+  silentRefreshRunning = true;
   try {
-    const [, configOk, circuitOk] = await Promise.all([
-      app.checkHealth(),
-      app.loadConfig(true),
-      app.loadCircuit(true),
-    ]);
-    if (!configOk || !circuitOk) failed = true;
-  } catch {
-    failed = true;
-  }
-  if (app.healthy === false) failed = true;
-  if (await refresh.runHandlers()) failed = true;
-  if (seq !== silentRefreshSeq) return;
-
-  if (failed) {
-    if (!app.staleData) {
-      toast.error("自动刷新失败，数据可能过期");
+    let failed = false;
+    try {
+      const [, configOk, circuitOk] = await Promise.all([
+        app.checkHealth(),
+        app.loadConfig(true),
+        app.loadCircuit(true),
+      ]);
+      if (!configOk || !circuitOk) failed = true;
+    } catch {
+      failed = true;
     }
-    app.staleData = true;
-  } else {
-    app.staleData = false;
+    if (app.healthy === false) failed = true;
+    if (await refresh.runHandlers()) failed = true;
+
+    if (failed) {
+      if (!app.staleData) {
+        toast.error("自动刷新失败，数据可能过期");
+      }
+      app.staleData = true;
+    } else {
+      app.staleData = false;
+    }
+  } finally {
+    silentRefreshRunning = false;
   }
 }
 
