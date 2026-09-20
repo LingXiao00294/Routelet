@@ -36,7 +36,8 @@ class SSEDecoder:
     """Decode complete SSE events across arbitrary byte chunk boundaries.
 
     The decoder follows SSE field rules for comments, optional spaces after
-    colons, arbitrary field order, and multiple ``data`` lines. Incomplete
+    colons, arbitrary field order, multiple ``data`` lines, and one leading UTF-8
+    byte order mark. Wire frames retain their original bytes. Incomplete
     events remain buffered until a blank line arrives. The size limit bounds
     memory use when an upstream never terminates an event.
 
@@ -52,6 +53,7 @@ class SSEDecoder:
             raise ValueError("max_event_bytes must be positive")
         self._max_event_bytes = max_event_bytes
         self._buffer = bytearray()
+        self._at_stream_start = True
 
     def feed(self, chunk: bytes) -> list[SSEEvent]:
         """Consume bytes and return every newly completed SSE event.
@@ -116,8 +118,10 @@ class SSEDecoder:
             self._buffer.clear()
             raise SSEDecodeError(f"SSE event exceeds {self._max_event_bytes} bytes")
 
-    @staticmethod
-    def _parse_event(raw_event: bytes) -> SSEEvent | None:
+    def _parse_event(self, raw_event: bytes) -> SSEEvent | None:
+        if self._at_stream_start:
+            raw_event = raw_event.removeprefix(b"\xef\xbb\xbf")
+            self._at_stream_start = False
         event_type = "message"
         data_lines: list[bytes] = []
         for line in _LINE_SPLIT_RE.split(raw_event):

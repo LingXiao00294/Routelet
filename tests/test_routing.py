@@ -808,3 +808,30 @@ async def test_combined_stream_events_commit_before_later_error(sample_config):
 
     assert calls == 1
     assert chunks == [first_event]
+
+
+async def test_bom_prefixed_stream_error_allows_failover(sample_config):
+    """Recognize an initial error even with a split UTF-8 stream signature."""
+    failed = b'\xef\xbb\xbfevent: error\ndata: {"error":{"type":"api_error"}}\n\n'
+    success = b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    calls = 0
+
+    async def failed_body():
+        for byte in failed:
+            yield bytes((byte,))
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=failed_body() if calls == 1 else success)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        outcome = {}
+        chunks = [
+            chunk
+            async for chunk in router.route_stream({"model": "haiku-router"}, outcome)
+        ]
+
+    assert calls == outcome["attempt"] == 2
+    assert chunks == [success]
