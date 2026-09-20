@@ -83,7 +83,26 @@ export function parseFailover(raw: string | null): FailoverEntry[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as FailoverEntry[]) : [];
+    if (!Array.isArray(parsed)) return [];
+    const entries: FailoverEntry[] = [];
+    for (const value of parsed) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const { provider, model, error, latency_ms } = value as Record<string, unknown>;
+      if (
+        typeof provider !== "string" || !provider.trim() ||
+        typeof model !== "string" || !model.trim() ||
+        typeof error !== "string"
+      ) {
+        continue;
+      }
+      // Exceptions such as timeouts may legitimately have an empty message.
+      const entry: FailoverEntry = { provider, model, error };
+      if (typeof latency_ms === "number" && Number.isFinite(latency_ms) && latency_ms >= 0) {
+        entry.latency_ms = latency_ms;
+      }
+      entries.push(entry);
+    }
+    return entries;
   } catch {
     return [];
   }
