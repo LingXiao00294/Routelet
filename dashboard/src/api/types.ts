@@ -9,7 +9,7 @@ export interface Summary {
   total_output_tokens: number;
   total_cache_read: number;
   total_cache_write: number;
-  total_cost_usd: number;
+  total_cost_usd: number | null;
   avg_latency_ms: number;
 }
 

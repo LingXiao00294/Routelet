@@ -63,6 +63,12 @@ class TestCostCalculation:
     def test_missing_pricing_is_free(self):
         assert _calculate_cost_usd({"input_tokens": 1_000_000}, {}) == 0.0
 
+    def test_per_million_scaling_avoids_intermediate_overflow(self):
+        """Retain a representable cost even when unscaled products overflow."""
+        cost = _calculate_cost_usd({"input_tokens": 100}, {"pricing": {"input": 1e308}})
+
+        assert cost == pytest.approx(1e304)
+
     @pytest.mark.asyncio
     async def test_streaming_route_persists_calculated_cost(self, store, recorder):
         """Persist streamed usage cost with the selected provider prices."""

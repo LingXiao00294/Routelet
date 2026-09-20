@@ -47,6 +47,7 @@ def _calculate_cost_usd(usage: Mapping[str, Any], outcome: Mapping[str, Any]) ->
 
     Missing usage values and prices contribute zero, preserving compatibility
     with providers and model references that do not expose pricing details.
+    Scale prices before multiplication to avoid intermediate float overflow.
     """
     pricing = outcome.get("pricing")
     if not isinstance(pricing, Mapping):
@@ -59,10 +60,11 @@ def _calculate_cost_usd(usage: Mapping[str, Any], outcome: Mapping[str, Any]) ->
         ("cache_creation_input_tokens", "cache_write"),
     )
     total = sum(
-        float(usage.get(token_key) or 0) * float(pricing.get(price_key) or 0)
+        float(usage.get(token_key) or 0)
+        * (float(pricing.get(price_key) or 0) / 1_000_000)
         for token_key, price_key in token_prices
     )
-    return round(total / 1_000_000, 10)
+    return round(total, 10)
 
 
 _PRICE_SNAPSHOT_FIELDS = (

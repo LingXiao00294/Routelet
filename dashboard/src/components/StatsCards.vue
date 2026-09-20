@@ -38,7 +38,7 @@ const cards = computed(() => {
     {
       key: "cost",
       label: "费用",
-      value: formatUsd(s?.total_cost_usd ?? 0),
+      value: formatUsd(s ? s.total_cost_usd : 0),
       sub: `均延迟 ${formatLatency(s?.avg_latency_ms ?? null)}`,
     },
   ];

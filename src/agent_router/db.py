@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
+from collections.abc import Sequence
 from datetime import datetime, timezone
+from math import isfinite
 from pathlib import Path
 from typing import Any, Required, TypedDict, Unpack
 
@@ -94,6 +97,65 @@ CALL_SUMMARY_COLUMNS = (
     "cost_usd",
 )
 _CALL_SUMMARY_SELECT = ", ".join(CALL_SUMMARY_COLUMNS)
+_TOKEN_COLUMNS = (
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+)
+_TOKEN_AGGREGATE_FIELDS = frozenset(
+    (
+        *_TOKEN_COLUMNS,
+        "total_input_tokens",
+        "total_output_tokens",
+        "total_cache_read",
+        "total_cache_write",
+    )
+)
+
+
+class _ExactTokenSum:
+    """Sum integer tokens without SQLite's 64-bit intermediate limit.
+
+    Oversized integer results cross the SQLite callback boundary as decimal
+    text and are restored to Python integers before leaving ``CallStore``.
+    Preserve NULL-only groups and legacy REAL values like SQLite SUM does.
+    """
+
+    def __init__(self) -> None:
+        self._total: int | float | None = None
+
+    def step(self, value: int | float | None) -> None:
+        if value is not None:
+            self._total = value if self._total is None else self._total + value
+
+    def finalize(self) -> int | float | str | None:
+        total = self._total
+        if isinstance(total, int) and not -(2**63) <= total <= 2**63 - 1:
+            return str(total)
+        return total
+
+
+class _MetricsConnection(sqlite3.Connection):
+    """Register the exact fallback through SQLite's public connection factory."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # SQLite accepts any scalar result; the bundled stub only permits int.
+        self.create_aggregate(
+            "agent_router_token_sum",
+            1,
+            _ExactTokenSum,  # ty: ignore[invalid-argument-type]
+        )
+
+
+def _finite_cost_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """Expose non-finite costs as unknown without changing persisted values."""
+    for field in ("cost_usd", "total_cost_usd"):
+        value = row.get(field)
+        if isinstance(value, float) and not isfinite(value):
+            row[field] = None
+    return row
 
 
 class CallRecordPayload(TypedDict, total=False):
@@ -155,7 +217,7 @@ class CallStore:
         if self.db_path != Path(":memory:") and self.db_path.exists():
             await self._validate_existing_schema()
 
-        conn = await aiosqlite.connect(str(self.db_path))
+        conn = await aiosqlite.connect(str(self.db_path), factory=_MetricsConnection)
         try:
             conn.row_factory = aiosqlite.Row
             await conn.executescript(SCHEMA)
@@ -272,7 +334,7 @@ class CallStore:
             "SELECT * FROM calls WHERE id = ?", (call_id,)
         ) as cursor:
             row = await cursor.fetchone()
-        return dict(row) if row else None
+        return _finite_cost_fields(dict(row)) if row else None
 
     async def list_calls(
         self,
@@ -317,12 +379,45 @@ class CallStore:
             "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             [*params, size, offset],
         )
-        return [dict(r) for r in rows], total
+        return [_finite_cost_fields(dict(r)) for r in rows], total
+
+    async def _aggregate_rows(
+        self, query: str, parameters: Sequence[Any] = ()
+    ) -> list[dict[str, Any]]:
+        """Use native SUM unless token aggregation exhausts SQLite integers.
+
+        Only the explicit integer-overflow error triggers a second query. That
+        query replaces token sums while retaining grouping, filtering, and all
+        other aggregates. SQLite casts preserve its treatment of legacy REAL
+        or text values; valid integer tokens remain exact throughout.
+        """
+        try:
+            rows = await self.conn.execute_fetchall(query, parameters)
+        except sqlite3.OperationalError as exc:
+            if str(exc) != "integer overflow":
+                raise
+            for column in _TOKEN_COLUMNS:
+                query = query.replace(
+                    f"SUM({column})",
+                    f"agent_router_token_sum(CASE WHEN TYPEOF({column}) = 'integer' "
+                    f"THEN {column} ELSE CAST({column} AS REAL) END)",
+                )
+            rows = await self.conn.execute_fetchall(query, parameters)
+            return [
+                {
+                    key: int(value)
+                    if key in _TOKEN_AGGREGATE_FIELDS and isinstance(value, str)
+                    else value
+                    for key, value in dict(row).items()
+                }
+                for row in rows
+            ]
+        return [dict(row) for row in rows]
 
     async def summary(self) -> dict:
         """返回概览统计."""
         row = list(
-            await self.conn.execute_fetchall(
+            await self._aggregate_rows(
                 """SELECT
                 COUNT(*) AS total_calls,
                 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count,
@@ -338,21 +433,23 @@ class CallStore:
         r = dict(row[0])
         total = r["total_calls"] or 0
         success = r["success_count"] or 0
-        return {
-            "total_calls": total,
-            "success_count": success,
-            "error_count": total - success,
-            "success_rate": round(success / total * 100, 2) if total > 0 else 0,
-            "total_input_tokens": r["total_input_tokens"] or 0,
-            "total_output_tokens": r["total_output_tokens"] or 0,
-            "total_cache_read": r["total_cache_read"] or 0,
-            "total_cache_write": r["total_cache_write"] or 0,
-            "total_cost_usd": round(r["total_cost_usd"] or 0, 6),
-            "avg_latency_ms": round(r["avg_latency_ms"] or 0),
-        }
+        return _finite_cost_fields(
+            {
+                "total_calls": total,
+                "success_count": success,
+                "error_count": total - success,
+                "success_rate": round(success / total * 100, 2) if total > 0 else 0,
+                "total_input_tokens": r["total_input_tokens"] or 0,
+                "total_output_tokens": r["total_output_tokens"] or 0,
+                "total_cache_read": r["total_cache_read"] or 0,
+                "total_cache_write": r["total_cache_write"] or 0,
+                "total_cost_usd": round(r["total_cost_usd"] or 0, 6),
+                "avg_latency_ms": round(r["avg_latency_ms"] or 0),
+            }
+        )
 
     async def by_model(self) -> list[dict]:
-        rows = await self.conn.execute_fetchall(
+        rows = await self._aggregate_rows(
             """SELECT
                 virtual_model,
                 COUNT(*) AS count,
@@ -362,7 +459,7 @@ class CallStore:
                 SUM(cost_usd) AS total_cost_usd
             FROM calls GROUP BY virtual_model"""
         )
-        return [dict(r) for r in rows]
+        return [_finite_cost_fields(dict(r)) for r in rows]
 
     async def by_provider(self) -> list[dict]:
         rows = await self.conn.execute_fetchall(
@@ -375,7 +472,7 @@ class CallStore:
         return [dict(r) for r in rows]
 
     async def by_real_model(self) -> list[dict]:
-        rows = await self.conn.execute_fetchall(
+        rows = await self._aggregate_rows(
             """SELECT
                 provider_name AS provider,
                 provider_model AS model,
@@ -389,7 +486,7 @@ class CallStore:
             GROUP BY provider_name, provider_model
             ORDER BY count DESC, provider_name, provider_model"""
         )
-        return [dict(r) for r in rows]
+        return [_finite_cost_fields(dict(r)) for r in rows]
 
     async def daily_trend(self, days: int = 30) -> list[dict]:
         """Return metrics for today and the preceding UTC calendar days.
@@ -406,7 +503,7 @@ class CallStore:
         """
         if days < 1:
             raise ValueError("days 必须大于等于 1")
-        rows = await self.conn.execute_fetchall(
+        rows = await self._aggregate_rows(
             """SELECT
                 DATE(timestamp) AS day,
                 COUNT(*) AS count,
@@ -421,7 +518,7 @@ class CallStore:
             GROUP BY day ORDER BY day""",
             (f"-{days - 1} days",),
         )
-        return [dict(r) for r in rows]
+        return [_finite_cost_fields(dict(r)) for r in rows]
 
 
 def _estimate_request_tokens(body: dict | None) -> int | None:
