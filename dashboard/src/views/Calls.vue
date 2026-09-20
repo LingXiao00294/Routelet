@@ -2,6 +2,7 @@
 import {
   computed,
   nextTick,
+  onBeforeUnmount,
   onMounted,
   ref,
   watch,
@@ -31,6 +32,13 @@ const metrics = useMetricsStore();
 const { byRealModel: actualModels } = storeToRefs(metrics);
 const pageHeading = ref<HTMLElement | null>(null);
 const detailButtons = new Map<string, HTMLButtonElement>();
+let loadGeneration = 0;
+let active = true;
+
+onBeforeUnmount(() => {
+  active = false;
+  loadGeneration += 1;
+});
 
 const filters = computed(() => ({
   page: parsePositiveInt(route.query.page, 1),
@@ -65,6 +73,9 @@ function updateActualModelFilter(key: string) {
 }
 
 async function load(silent = false) {
+  if (!active) return;
+  const generation = ++loadGeneration;
+  const query = route.query;
   const pageNum = filters.value.page;
   const sizeNum = filters.value.size;
   // Normalize invalid query strings (e.g. page=abc) back into the URL.
@@ -89,6 +100,7 @@ async function load(silent = false) {
     },
     silent,
   );
+  if (!active || generation !== loadGeneration || route.query !== query) return;
   const p = store.page;
   if (p && p.total > 0 && p.data.length === 0 && p.page > p.pages) {
     updateQuery({ page: Math.max(1, p.pages) });
@@ -142,7 +154,7 @@ async function restoreDetailFocus(id: string) {
 
 onMounted(() => {
   void load();
-  if (!metrics.loadedOnce) void metrics.refresh(true).catch(() => {});
+  void metrics.refresh(true).catch(() => {});
 });
 
 watch(
@@ -160,8 +172,11 @@ watch(
 );
 
 useAutoRefresh(async () => {
-  await load(true);
+  if (!active) return;
+  await Promise.all([load(true), metrics.refresh(true)]);
+  if (!active) return;
   if (store.error) throw new Error(store.error);
+  if (metrics.error) throw new Error(metrics.error);
 });
 
 watch(
