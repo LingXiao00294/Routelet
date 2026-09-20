@@ -4,6 +4,7 @@ import json
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Literal
 
 import structlog
@@ -150,7 +151,7 @@ class Router:
             raise _RoutingConfigChanged
 
     async def _get_providers_for_generation(
-        self, virtual_model: str, generation: int
+        self, virtual_model: str, generation: int, outcome: dict
     ) -> list[ProviderConfig]:
         """Return candidates only when routing configuration stayed unchanged.
 
@@ -160,8 +161,19 @@ class Router:
         """
         try:
             providers = await self._get_providers(virtual_model)
-        except (UnknownModelError, AllProvidersFailedError, NoProviderAvailableError):
+        except UnknownModelError:
             self._ensure_config_generation(generation)
+            raise
+        except (AllProvidersFailedError, NoProviderAvailableError) as exc:
+            self._ensure_config_generation(generation)
+            outcome.setdefault("_failures", []).extend(
+                {
+                    "provider": error["provider"],
+                    "model": error["model"],
+                    "error": error["error"],
+                }
+                for error in exc.errors
+            )
             raise
         self._ensure_config_generation(generation)
         return providers
@@ -408,9 +420,11 @@ class Router:
     ) -> dict:
         """非流式路由: 返回第一个成功 provider 的响应 JSON.
 
-        outcome 可选字典，成功时会写入最终 provider、模型、尝试次数、URL，
-        以及保留未配置 ``None`` 值的价格信息。
+        outcome 可选字典，成功时写入最终 provider、模型、URL 和价格信息。
+        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
         """
+        outcome = outcome if outcome is not None else {}
+        outcome["attempt"] = 0
         while True:
             generation = self._config_generation
             try:
@@ -431,13 +445,15 @@ class Router:
     async def _route_non_stream_once(
         self,
         request_body: dict,
-        outcome: dict | None,
+        outcome: dict,
         *,
         generation: int,
     ) -> dict:
         """Route once against one immutable configuration generation."""
         virtual_model = request_body.get("model", "")
-        providers = await self._get_providers_for_generation(virtual_model, generation)
+        providers = await self._get_providers_for_generation(
+            virtual_model, generation, outcome
+        )
         allow_failover = self.config.router.mode == "failover"
 
         request_id = get_contextvars().get("request_id") or str(uuid.uuid4())
@@ -454,7 +470,6 @@ class Router:
         )
 
         for i, provider_cfg in enumerate(providers):
-            attempt = i + 1
             p_start = time.time()
             permit: CircuitPermit | None = None
 
@@ -478,6 +493,8 @@ class Router:
                         continue
 
                     self._ensure_config_generation(generation)
+                    attempt = outcome["attempt"] + 1
+                    outcome["attempt"] = attempt
                     logger.info(
                         "provider.try",
                         request_id=request_id,
@@ -562,16 +579,19 @@ class Router:
                     await self.circuit_breaker.release(permit)
 
         self._ensure_config_generation(generation)
-        raise self._exhausted(virtual_model, errors, start_time, len(providers))
+        raise self._exhausted(virtual_model, errors, start_time, outcome["attempt"])
 
     async def route_stream(
         self, request_body: dict, outcome: dict | None = None
     ) -> AsyncGenerator[bytes, None]:
         """流式路由: 返回第一个成功 provider 的 SSE 流.
 
-        outcome 可选字典，成功时会写入最终 provider、模型、尝试次数、URL，
-        以及保留未配置 ``None`` 值的价格信息。
+        outcome 可选字典，开始调用时写入 provider、模型、URL 和价格信息。
+        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        每个 SSE 事件完整校验后才交付，首个事件前的错误仍允许故障转移。
         """
+        outcome = outcome if outcome is not None else {}
+        outcome["attempt"] = 0
         client_started = False
         while True:
             generation = self._config_generation
@@ -603,13 +623,15 @@ class Router:
     async def _route_stream_once(
         self,
         request_body: dict,
-        outcome: dict | None,
+        outcome: dict,
         *,
         generation: int,
     ) -> AsyncGenerator[bytes, None]:
         """Route one stream against one immutable configuration generation."""
         virtual_model = request_body.get("model", "")
-        providers = await self._get_providers_for_generation(virtual_model, generation)
+        providers = await self._get_providers_for_generation(
+            virtual_model, generation, outcome
+        )
         allow_failover = self.config.router.mode == "failover"
 
         request_id = get_contextvars().get("request_id") or str(uuid.uuid4())
@@ -629,7 +651,6 @@ class Router:
         client_started = False
 
         for i, provider_cfg in enumerate(providers):
-            attempt = i + 1
             p_start = time.time()
             permit: CircuitPermit | None = None
 
@@ -653,6 +674,8 @@ class Router:
                         continue
 
                     self._ensure_config_generation(generation)
+                    attempt = outcome["attempt"] + 1
+                    outcome["attempt"] = attempt
                     logger.info(
                         "provider.try",
                         request_id=request_id,
@@ -678,18 +701,30 @@ class Router:
                             "cache_write": provider_cfg.cache_write_price_per_million,
                         }
                     error_decoder = SSEDecoder()
-                    async for chunk in provider.send_stream(request_body):
-                        try:
-                            events = error_decoder.feed(chunk)
-                        except SSEDecodeError as exc:
-                            raise NonRetryableError(
-                                f"Invalid SSE stream: {exc}"
-                            ) from exc
-                        for event in events:
-                            _raise_for_stream_error(event)
-                        # 已 yield 后 client_started=True，异常不会再 failover
-                        client_started = True
-                        yield chunk
+                    async with aclosing(provider.send_stream(request_body)) as upstream:
+                        async for chunk in upstream:
+                            try:
+                                frames = error_decoder.feed_frames(chunk)
+                            except SSEDecodeError as exc:
+                                raise NonRetryableError(
+                                    f"Invalid SSE stream: {exc}"
+                                ) from exc
+                            for frame in frames:
+                                if frame.event is not None:
+                                    _raise_for_stream_error(frame.event)
+                                elif not client_started:
+                                    # 初始 keepalive 不能决定使用哪个 Provider。
+                                    continue
+                                client_started = True
+                                yield frame.raw
+                    try:
+                        error_decoder.finish()
+                    except SSEDecodeError as exc:
+                        raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
+                    if not client_started:
+                        raise NonRetryableError(
+                            "Upstream stream ended without an SSE data event"
+                        )
                     p_latency = (time.time() - p_start) * 1000
                     total_latency = (time.time() - start_time) * 1000
 
@@ -757,7 +792,7 @@ class Router:
                     await self.circuit_breaker.release(permit)
 
         self._ensure_config_generation(generation)
-        raise self._exhausted(virtual_model, errors, start_time, len(providers))
+        raise self._exhausted(virtual_model, errors, start_time, outcome["attempt"])
 
     def _exhausted(
         self,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 
 import httpx
 
@@ -48,5 +48,5 @@ class BaseProvider(ABC):
         """非流式请求，返回完整响应 JSON."""
 
     @abstractmethod
-    def send_stream(self, request_body: dict) -> AsyncIterator[bytes]:
-        """流式请求，yield SSE 原始字节."""
+    def send_stream(self, request_body: dict) -> AsyncGenerator[bytes, None]:
+        """Return an SSE byte stream that callers must close after consumption."""

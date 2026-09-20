@@ -1312,3 +1312,262 @@ class TestRecordCall:
 
         assert total == 1
         assert calls[0]["provider_name"] == "provider-b"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("final_status", [200, 400, 500, "removed", "unresolved"])
+async def test_hot_reload_preserves_total_attempts_in_call_records(
+    app_config, store, recorder, stream, final_status
+):
+    """Keep real attempts and failure history across a configuration restart."""
+    app_config.router.mode = "failover"
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            new_config = app_config.model_copy(deep=True)
+            if final_status == "removed":
+                new_config.models.clear()
+            elif final_status == "unresolved":
+                new_config.models["test-router"].providers[
+                    0
+                ].api_key = "${MISSING_REVIEW_TEST_KEY}"
+            await router.reload_config(new_config)
+            return httpx.Response(500, text="failure before reload")
+        if final_status != 200:
+            return httpx.Response(int(final_status), text="failure after reload")
+        if stream:
+            return httpx.Response(
+                200,
+                content=b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+            )
+        return httpx.Response(200, json={"usage": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(app_config, store, call_recorder=recorder)
+        original_router = app.state.router_engine
+        router = Router(app_config, upstream)
+        app.state.router_engine = router
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages",
+                    json={"model": "test-router", "stream": stream, "messages": []},
+                )
+        finally:
+            await original_router.http.aclose()
+
+    expected_status = 400 if final_status == "removed" else final_status
+    if expected_status in (500, "unresolved"):
+        expected_status = 502
+    assert response.status_code == expected_status
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert (
+        call["attempt"]
+        == calls
+        == (1 if final_status in ("removed", "unresolved") else 2)
+    )
+    failures = json.loads(call["failover_details"])
+    assert "failure before reload" in failures[0]["error"]
+    assert len(failures) == (2 if final_status in (400, 500, "unresolved") else 1)
+    if final_status == "unresolved":
+        assert "MISSING_REVIEW_TEST_KEY" in failures[-1]["error"]
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("blocked", ["capacity", "cooldown", "circuit", "key"])
+async def test_skipped_providers_record_zero_real_attempts(
+    app_config, store, recorder, stream, blocked
+):
+    """Do not report a provider skip as an upstream API call."""
+    app_config.router.mode = "failover"
+    provider = app_config.models["test-router"].providers[0]
+    if blocked == "capacity":
+        provider.max_concurrent = 1
+    elif blocked == "key":
+        provider.api_key = "${MISSING_REVIEW_TEST_KEY}"
+
+    def unexpected(request):
+        raise AssertionError("blocked provider must not be called")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(unexpected)) as upstream:
+        app = create_app(app_config, store, call_recorder=recorder)
+        original_router = app.state.router_engine
+        router = Router(app_config, upstream)
+        app.state.router_engine = router
+        if blocked == "cooldown":
+            router.provider_gate.enter_cooldown(provider.name, 60)
+        elif blocked == "circuit":
+            await router.circuit_breaker.record_failure(provider.name, immediate=True)
+
+        async def send_request():
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                return await api_client.post(
+                    "/v1/messages",
+                    json={"model": "test-router", "stream": stream, "messages": []},
+                )
+
+        try:
+            if blocked == "capacity":
+                async with router.provider_gate.slot(provider):
+                    response = await send_request()
+            else:
+                response = await send_request()
+        finally:
+            await original_router.http.aclose()
+
+    assert response.status_code in (429, 502, 503)
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["attempt"] == 0
+    assert call["provider_name"] is None
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_gate_skip_does_not_inflate_successful_attempts(
+    sample_config, store, recorder, stream
+):
+    """Only count the fallback provider when the first candidate has no capacity."""
+    first = sample_config.models["haiku-router"].providers[0]
+    first.max_concurrent = 1
+    calls: list[str] = []
+
+    def handler(request):
+        calls.append(request.url.host)
+        if stream:
+            return httpx.Response(200, content=b"event: message_stop\ndata: {}\n\n")
+        return httpx.Response(200, json={"usage": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(sample_config, store, call_recorder=recorder)
+        original_router = app.state.router_engine
+        router = Router(sample_config, upstream)
+        app.state.router_engine = router
+        try:
+            async with router.provider_gate.slot(first):
+                async with AsyncClient(
+                    transport=ASGITransport(app=app), base_url="http://test"
+                ) as api_client:
+                    response = await api_client.post(
+                        "/v1/messages",
+                        json={"model": "haiku-router", "stream": stream},
+                    )
+        finally:
+            await original_router.http.aclose()
+
+    assert response.status_code == 200
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["attempt"] == len(calls) == 1
+    assert call["provider_name"] == "zhipu"
+
+
+@pytest.mark.parametrize("started", [False, True])
+async def test_split_upstream_error_produces_valid_client_sse(
+    sample_config, store, recorder, started
+):
+    """Never concatenate a partial upstream error with the router's error event."""
+    calls = 0
+    first_event = b'event: message_start\ndata: {"type":"message_start"}\n\n'
+    error_event = (
+        b'event: error\ndata: {"error":{"type":"api_error","message":"busy"}}\n\n'
+    )
+
+    async def body():
+        if started:
+            yield first_event
+        yield error_event[:-1]
+        yield error_event[-1:]
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=body() if calls == 1 else first_event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(sample_config, store, call_recorder=recorder)
+        original_router = app.state.router_engine
+        app.state.router_engine = Router(sample_config, upstream)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages", json={"model": "haiku-router", "stream": True}
+                )
+        finally:
+            await original_router.http.aclose()
+
+    assert response.status_code == 200
+    events = app_module.SSEDecoder().feed(response.content)
+    assert [json.loads(event.data)["type"] for event in events] == (
+        ["message_start", "error"] if started else ["message_start"]
+    )
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["attempt"] == calls == (1 if started else 2)
+    assert call["status"] == ("error" if started else "success")
+    assert len(json.loads(call["failover_details"])) == 1
+
+
+@pytest.mark.parametrize(
+    ("content", "started"),
+    [
+        (b"", False),
+        (b": keepalive\n\n", False),
+        (b'event: error\ndata: {"error":{"type":"api_error"}}', False),
+        (
+            b'event: message_start\ndata: {"type":"message_start"}\n\n'
+            b'event: content_block_delta\ndata: {"delta":',
+            True,
+        ),
+    ],
+    ids=["empty", "comments-only", "undispatched-error", "partial-after-start"],
+)
+async def test_incomplete_upstream_sse_never_records_success(
+    sample_config, store, recorder, content, started
+):
+    """Reject early EOF without silently discarding the failed response."""
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=content)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(sample_config, store, call_recorder=recorder)
+        original_router = app.state.router_engine
+        app.state.router_engine = Router(sample_config, upstream)
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages", json={"model": "haiku-router", "stream": True}
+                )
+        finally:
+            await original_router.http.aclose()
+
+    if started:
+        assert response.status_code == 200
+        events = app_module.SSEDecoder().feed(response.content)
+        assert [json.loads(event.data)["type"] for event in events] == [
+            "message_start",
+            "error",
+        ]
+    else:
+        assert response.status_code == 502
+        assert response.json()["error"]["type"] == "api_error"
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["status"] == "error"
+    assert call["attempt"] == calls == 1
+    assert len(json.loads(call["failover_details"])) == 1

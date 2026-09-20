@@ -359,8 +359,12 @@ data: {"type":"message_stop"}
 1. Router 与独立 Dashboard 代理都以 50 MiB 上限有界读取请求体（包括 chunked 请求），Router 随后解析 JSON，并校验 `model` 为非空字符串、`stream`（若提供）为布尔值
 2. 提取 `model` 字段，并把 `anthropic-version` / `anthropic-beta` 作为仅供 Provider 使用的内部元数据 → 查找虚拟模型对应的 provider 链
 3. 未找到 → 返回 400 + 已知模型列表
-4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；无论正常结束、发送失败还是取消都主动关闭内层流
+4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；完整 SSE 事件逐个校验后才转发，首个有效事件前允许故障转移，初始注释和跨数据块的半个事件不锁定 Provider；无论正常结束、发送失败还是取消都主动关闭内层流
 5. `stream: false` → `JSONResponse(routing.send(...))`
+
+流式上游正常结束时还会校验是否交付过数据事件，以及是否残留缺少结束空行的数据帧；空流和不完整帧按协议错误处理，不能关闭熔断器或写入成功记录。预取阶段及时发现时返回 HTTP 502；响应头已发送后则使用 SSE error 报告错误。
+
+流式调用记录的职责随响应体开始消费而从端点交给包装器。预取期间取消、发送响应头失败、消费中断都提交一次取消记录；未启动响应体时由关闭回调回收已获取的资源并记录，避免依赖未启动生成器的 `finally`。
 
 **`GET /v1/models` 响应格式：**
 
@@ -392,6 +396,10 @@ def main():
 ```
 
 ### 7. recording.py + db.py — 调用记录持久化
+
+`attempt` 在每次真正开始 Provider 调用时递增，并在配置热重载后的重新路由中继续累计；本地排队、冷却和熔断跳过不算上游调用。成功、失败和取消记录共享同一请求的累计计数，未调用上游时为 `0`。
+
+流式和非流式用量进入计费与记录前，共用 token 字段校验：只接受 SQLite 有符号整数范围内的非负整数，排除布尔值，忽略其他值和非对象 usage。有效字段独立保留；非流式上游响应正文不受此校验修改。
 
 `CallRecorder` 将请求路径与 SQLite I/O 隔离：请求完成后先把正文序列化为最多 256 KiB 的有效 JSON，再通过非阻塞 `submit()` 写入进程内有界队列。超限正文保存带 `_truncated`、原始 UTF-8 字节数和文本预览的截断信封；输入 token 仍在截断前估算。单个后台 writer 再调用 `CallStore`，使用 `aiosqlite` 顺序写入。writer 随 FastAPI lifespan 启动，关闭时在有限时间内排空已接收记录，然后才关闭数据库。
 

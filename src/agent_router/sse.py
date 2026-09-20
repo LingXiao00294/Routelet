@@ -13,7 +13,7 @@ _DEFAULT_MAX_EVENT_BYTES = 1024 * 1024
 
 
 class SSEDecodeError(ValueError):
-    """Raised when an SSE event exceeds the decoder's configured size limit."""
+    """Raised when an SSE event exceeds its size limit or ends incomplete."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +22,14 @@ class SSEEvent:
 
     event: str
     data: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class SSEFrame:
+    """Retain one complete wire frame and its optional dispatched event."""
+
+    raw: bytes
+    event: SSEEvent | None
 
 
 class SSEDecoder:
@@ -60,21 +68,48 @@ class SSEDecoder:
             SSEDecodeError: If a complete or buffered event exceeds the size
                 limit.
         """
+        return [
+            frame.event for frame in self.feed_frames(chunk) if frame.event is not None
+        ]
+
+    def feed_frames(self, chunk: bytes) -> list[SSEFrame]:
+        """Return complete frames without exposing an unvalidated partial event.
+
+        Unlike :meth:`feed`, this preserves wire bytes and data-less comment
+        frames so a proxy can validate each event before forwarding it. Pending
+        bytes stay subject to the same event size limit.
+        """
         previous_length = len(self._buffer)
         self._buffer.extend(chunk)
-        events: list[SSEEvent] = []
+        frames: list[SSEFrame] = []
         search_from = max(0, previous_length - (_MAX_SEPARATOR_BYTES - 1))
         separator = _EVENT_SEPARATOR_RE.search(self._buffer, search_from)
         while separator is not None:
             raw_event = bytes(self._buffer[: separator.start()])
+            raw_frame = bytes(self._buffer[: separator.end()])
             del self._buffer[: separator.end()]
             self._check_size(raw_event)
             event = self._parse_event(raw_event)
-            if event is not None:
-                events.append(event)
+            frames.append(SSEFrame(raw=raw_frame, event=event))
             separator = _EVENT_SEPARATOR_RE.search(self._buffer)
         self._check_size(self._buffer)
-        return events
+        return frames
+
+    def finish(self) -> None:
+        """Validate EOF without dispatching an unterminated data event.
+
+        SSE requires a blank line before dispatch. A remaining data field at
+        EOF therefore represents a truncated response, even when its JSON is
+        syntactically complete. Trailing comments, control fields, and line
+        endings cannot dispatch data and are discarded.
+
+        Raises:
+            SSEDecodeError: If EOF interrupts a frame containing data.
+        """
+        pending = bytes(self._buffer)
+        self._buffer.clear()
+        if self._parse_event(pending) is not None:
+            raise SSEDecodeError("SSE stream ended before the event's blank line")
 
     def _check_size(self, raw_event: bytes | bytearray) -> None:
         if len(raw_event) > self._max_event_bytes:

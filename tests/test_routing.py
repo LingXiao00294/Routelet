@@ -678,14 +678,14 @@ class TestRateLimitRouting:
             )
             router = Router(config, client)
             chunks: list[bytes] = []
-            with pytest.raises(RetryableError, match="api_error"):
-                async for chunk in router.route_stream(
-                    {"model": "m", "max_tokens": 10, "messages": [], "stream": True}
-                ):
-                    chunks.append(chunk)
+            async for chunk in router.route_stream(
+                {"model": "m", "max_tokens": 10, "messages": [], "stream": True}
+            ):
+                chunks.append(chunk)
 
-        assert calls["n"] == 1
-        assert chunks == [error_prefix]
+        assert calls["n"] == 2
+        assert b"message_start" in b"".join(chunks)
+        assert b"event: error" not in b"".join(chunks)
 
     async def test_stream_error_before_yield_allows_failover(self, http_client):
         """首包即为 event:error 时不应先发给客户端，应可 failover."""
@@ -742,3 +742,69 @@ class TestRateLimitRouting:
             assert chunks
             assert b"message_start" in chunks[0]
             assert b"event: error" not in b"".join(chunks)
+
+
+@pytest.mark.parametrize("split", [1, 12, 40, -1])
+@pytest.mark.parametrize("started", [False, True])
+async def test_split_stream_error_never_leaks_partial_event(
+    sample_config, split, started
+):
+    """Retry initial errors, but preserve the chosen stream after useful output."""
+    first_event = b'event: message_start\ndata: {"type":"message_start"}\n\n'
+    error_event = (
+        b'event: error\ndata: {"type":"error","error":'
+        b'{"type":"api_error","message":"busy"}}\n\n'
+    )
+    calls: list[str] = []
+
+    async def body():
+        yield b": keepalive\n\n"
+        if started:
+            yield first_event
+        yield error_event[:split]
+        yield error_event[split:]
+
+    def handler(request):
+        calls.append(request.url.host)
+        if len(calls) == 1:
+            return httpx.Response(200, content=body())
+        return httpx.Response(200, content=first_event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        chunks: list[bytes] = []
+
+        async def consume():
+            async for chunk in router.route_stream({"model": "haiku-router"}):
+                chunks.append(chunk)
+
+        if started:
+            with pytest.raises(RetryableError, match="busy"):
+                await consume()
+        else:
+            await consume()
+
+    assert len(calls) == (1 if started else 2)
+    assert b"".join(chunks) == first_event
+
+
+async def test_combined_stream_events_commit_before_later_error(sample_config):
+    """Respect event order when a data event and an error share a network chunk."""
+    first_event = b"event: message_start\ndata: {}\n\n"
+    error_event = b'event: error\ndata: {"error":{"type":"api_error"}}\n\n'
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=first_event + error_event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        chunks: list[bytes] = []
+        with pytest.raises(RetryableError):
+            async for chunk in router.route_stream({"model": "haiku-router"}):
+                chunks.append(chunk)
+
+    assert calls == 1
+    assert chunks == [first_event]

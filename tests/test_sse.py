@@ -40,3 +40,43 @@ def test_decoder_rejects_an_unterminated_oversized_event() -> None:
 
     with pytest.raises(SSEDecodeError, match="exceeds 8 bytes"):
         decoder.feed(b"data: 123")
+
+
+def test_frames_preserve_comments_and_buffer_incomplete_events() -> None:
+    """Expose wire bytes only after a complete frame is available."""
+    decoder = SSEDecoder()
+    prefix = b": keepalive\n\n"
+    event = b"event: message_delta\ndata: first\ndata: second\n\n"
+
+    frames = decoder.feed_frames(prefix + event[:-1])
+    assert [frame.raw for frame in frames] == [prefix]
+    assert frames[0].event is None
+    frames = decoder.feed_frames(event[-1:])
+    assert [frame.raw for frame in frames] == [event]
+    assert frames[0].event == SSEEvent("message_delta", b"first\nsecond")
+
+
+@pytest.mark.parametrize("ending", [b"", b"\n", b"\r", b"\r\n"])
+def test_finish_rejects_undispatched_data(ending: bytes) -> None:
+    """A full JSON value still needs the terminating blank line to be valid SSE."""
+    decoder = SSEDecoder()
+    assert decoder.feed(b"event: message_stop\ndata: {}" + ending) == []
+
+    with pytest.raises(SSEDecodeError, match="blank line"):
+        decoder.finish()
+
+
+@pytest.mark.parametrize("trailing", [b"", b"\n", b": final keepalive", b"id: 1"])
+def test_finish_allows_trailing_non_data_fields(trailing: bytes) -> None:
+    decoder = SSEDecoder()
+    assert decoder.feed(b"data: complete\n\n" + trailing) == [
+        SSEEvent("message", b"complete")
+    ]
+    decoder.finish()
+
+
+def test_finish_accepts_crlf_separator_split_before_final_lf() -> None:
+    decoder = SSEDecoder()
+    events = decoder.feed(b"data: complete\r\n\r") + decoder.feed(b"\n")
+    assert events == [SSEEvent("message", b"complete")]
+    decoder.finish()

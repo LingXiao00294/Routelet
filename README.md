@@ -174,11 +174,19 @@ models = [
 
 `POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB；独立 Dashboard 代理会在入口执行相同的有界读取，因此 chunked 请求也不能绕过限制。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。
 
-Router 会将客户端的 `anthropic-version` 与 `anthropic-beta` 请求头转发给最终 Anthropic-compatible Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。流式客户端中途断开时会立即关闭上游响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
+Router 会将客户端的 `anthropic-version` 与 `anthropic-beta` 请求头转发给最终 Anthropic-compatible Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。SSE 按完整事件校验后转发，初始注释和未完成的事件不会提前锁定 Provider；首个有效事件前的可重试错误即使跨网络数据块，也仍能故障转移。已经交付事件后不会拼接另一家 Provider 的响应。流式客户端中途断开时会立即关闭上游响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
 
 `PUT /api/config` 会先完成候选配置校验、TOML 序列化验证和运行时构建，再原子替换文件并切换 Router 与日志配置；任一步失败都会保留或恢复旧文件与旧运行时。热重载时已经开始上游 I/O 的真实在途调用可完成；尚未发起上游 I/O 的旧代际请求（包括本地队列中的请求）会透明地按最新配置重新选择 Provider，不会把配置更新误报为容量不足，也不能用旧 URL、密钥或并发限制继续调用。删除仍被引用的 Provider 或实际模型会返回 `409` 和 `provider_in_use` / `model_in_use`，并在 `referenced_by` 中列出虚拟模型。必须先单独保存引用移除，再执行删除。
 
 ### 调用记录数据库兼容性
+
+调用记录的 `attempt` 表示实际开始的上游调用次数，跨配置热重载后的重新路由继续累计。本地容量不足、冷却、熔断或未解析密钥导致的跳过不计入次数；未发起任何上游调用时为 `0`。故障转移明细仍保留相关失败及跳过原因。
+
+流式与非流式响应中的异常 token 用量在计费和记录时会被忽略，有效字段仍会保留；不会因此中断响应、丢弃调用记录或阻止上游资源关闭。非流式响应正文保持上游原样。
+
+流式请求在首个事件预取期间被取消，或在发送响应头时断开，也会记录一次 `client_cancelled`，保留已开始的上游尝试次数并释放连接与并发槽。
+
+空流、仅含注释的流，以及尚未结束数据事件就到达 EOF 的流，均按上游协议错误记录，不计为成功。预取阶段及时发现时返回 HTTP 502；若已发送响应头（包括预取超时的情况），则追加完整的 SSE error 事件。
 
 调用记录属于尽力而为的观测数据。请求完成后会先把请求与非流式响应序列化为最多 256 KiB 的有效 JSON（超限正文替换为包含原始字节数和文本预览的截断信封），再提交到进程内有界队列，由单个后台 writer 顺序写入 SQLite；这既限制慢磁盘期间的队列内存，也不会让 API 响应等待磁盘提交。队列已满、正文序列化失败、SQLite 写入失败或服务关闭时未能在超时内排空，会记录 `call_record.dropped`、`call_record.serialization_failed`、`call_record.failed`、`call_record.shutdown_timeout` 或 `call_record.cancelled` 日志，但不会把已经成功的模型响应改成失败。worker 的失败/取消日志会保留提交时的 `request_id`，便于关联请求链路。对应调用记录在这些情况下可能缺失，因此 `calls.db` 不应直接作为严格计费或审计账本。
 

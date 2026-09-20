@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from time import time
@@ -108,7 +108,8 @@ class AnthropicCompatProvider(BaseProvider):
         except Exception as e:
             raise NonRetryableError("响应不是有效的 JSON") from e
 
-    async def send_stream(self, request_body: dict) -> AsyncIterator[bytes]:
+    async def send_stream(self, request_body: dict) -> AsyncGenerator[bytes, None]:
+        """Yield upstream SSE bytes and close the HTTP response when finalized."""
         url = f"{self.config.base_url}/v1/messages"
         headers = self._build_headers(request_body)
         headers["Accept-Encoding"] = "identity"

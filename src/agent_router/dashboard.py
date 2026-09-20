@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Final
 
 import httpx
+from anyio import CancelScope
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
@@ -247,17 +248,28 @@ async def _stream_from_router(
             status_code=502,
         )
 
+    upstream_closed = False
+
+    async def close_upstream() -> None:
+        """Close the acquired response once, even before body iteration starts."""
+        nonlocal upstream_closed
+        if not upstream_closed:
+            with CancelScope(shield=True):
+                await upstream_context.__aexit__(None, None, None)
+                upstream_closed = True
+
     async def body_iterator():
         try:
             async for chunk in upstream.aiter_bytes():
                 yield chunk
         finally:
-            await upstream_context.__aexit__(None, None, None)
+            await close_upstream()
 
     return ManagedStreamingResponse(
         body_iterator(),
         status_code=upstream.status_code,
         headers=dict(_filtered_headers(upstream.headers.items(), response=True)),
+        on_close=close_upstream,
     )
 
 
