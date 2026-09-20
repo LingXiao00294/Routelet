@@ -619,6 +619,151 @@ class TestMessages:
             "error": {"type": "invalid_request_error", "message": message}
         }
 
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize(
+        "raw_value",
+        [
+            b"NaN",
+            b"Infinity",
+            b"1e999",
+            b'"\\ud800"',
+            b'{"\\udfff":"value"}',
+            b"[" * 10000 + b"0" + b"]" * 10000,
+        ],
+        ids=[
+            "nan",
+            "infinity",
+            "float-overflow",
+            "surrogate-value",
+            "surrogate-key",
+            "decoder-depth",
+        ],
+    )
+    async def test_rejects_unforwardable_json_before_routing(
+        self, app_config, store, recorder, raw_value, stream
+    ):
+        """Unencodable client JSON is a 400, never an upstream failure."""
+        app_config.router.mode = "failover"
+        upstream_calls = 0
+
+        def handler(request):
+            nonlocal upstream_calls
+            upstream_calls += 1
+            raise AssertionError("invalid client JSON must not reach the upstream")
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            await app.state.router_engine.http.aclose()
+            app.state.router_engine.http = upstream
+            async with AsyncClient(
+                transport=ASGITransport(app=app, raise_app_exceptions=False),
+                base_url="http://test",
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages",
+                    content=(
+                        b'{"model":"test-router","stream":'
+                        + (b"true" if stream else b"false")
+                        + b',"extra":'
+                        + raw_value
+                        + b"}"
+                    ),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
+        assert upstream_calls == 0
+        await recorder.wait_idle(timeout=1)
+        _, total = await store.list_calls()
+        assert total == 0
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("escaped_unicode", [False, True])
+    async def test_forwards_valid_unicode_and_finite_json(
+        self, app_config, store, recorder, stream, escaped_unicode
+    ):
+        app_config.router.mode = "failover"
+        body = {
+            "model": "test-router",
+            "stream": stream,
+            "messages": [{"role": "user", "content": "你好 🌏"}],
+            "metadata": {"中文🔑": [None, True, 1e308, -0.0, 2**64]},
+        }
+        received = []
+        sse = b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+
+        def handler(request):
+            received.append(json.loads(request.content))
+            if stream:
+                return httpx.Response(200, content=sse)
+            return httpx.Response(200, json={"id": "msg_unicode", "usage": {}})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            await app.state.router_engine.http.aclose()
+            app.state.router_engine.http = upstream
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages",
+                    content=json.dumps(body, ensure_ascii=escaped_unicode).encode(),
+                    headers={"content-type": "application/json"},
+                )
+
+        assert response.status_code == 200
+        assert received == [{**body, "model": "claude-haiku-4-5-20251001"}]
+        if stream:
+            assert response.content == sse
+        await recorder.wait_idle(timeout=1)
+        call = await _only_call_detail(store)
+        assert call["status"] == "success"
+        assert json.loads(call["request_body"]) == body
+
+    async def test_forwards_deep_json_supported_by_httpx(
+        self, app_config, store, recorder
+    ):
+        app_config.router.mode = "failover"
+        content = (
+            b'{"model":"test-router","extra":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+        )
+        try:
+            expected = json.loads(content)
+            expected["model"] = "claude-haiku-4-5-20251001"
+            wire_body = httpx.Request(
+                "POST", "https://provider.test", json=expected
+            ).content
+        except RecursionError:
+            pytest.skip("This Python runtime cannot forward 2000 nested arrays")
+        received = []
+
+        def handler(request):
+            received.append(request.content)
+            return httpx.Response(200, json={"id": "msg_deep", "usage": {}})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            await app.state.router_engine.http.aclose()
+            app.state.router_engine.http = upstream
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages",
+                    content=content,
+                    headers={"content-type": "application/json"},
+                )
+
+        assert response.status_code == 200
+        assert received == [wire_body]
+
     async def test_rejects_oversized_declared_body(self, client, monkeypatch):
         monkeypatch.setattr(app_module, "_MAX_REQUEST_BODY_BYTES", 16)
 

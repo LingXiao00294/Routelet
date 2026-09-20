@@ -557,7 +557,8 @@ async def _read_message_body(request: Request) -> dict[str, Any]:
 
     Raises:
         RequestBodyTooLarge: If Content-Length or streamed bytes exceed 50 MiB.
-        ValueError: If the body is empty, malformed JSON, or not an object.
+        ValueError: If the body is not a JSON object or cannot be forwarded as
+            finite UTF-8 JSON within the decoder and encoder's nesting limits.
     """
     content_length = request.headers.get("content-length")
     if content_length:
@@ -580,10 +581,21 @@ async def _read_message_body(request: Request) -> dict[str, Any]:
 
     try:
         payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise ValueError("请求体必须是有效的 JSON 对象") from exc
+    del body
     if not isinstance(payload, dict):
         raise ValueError("请求体顶层必须是 JSON 对象")
+    try:
+        # HTTPX requires finite UTF-8 JSON. Validate before choosing a Provider
+        # so client encoding errors cannot become upstream failures or attempts.
+        # Match its encoder: iterencode() has a lower Python recursion limit and
+        # would reject some deeply nested bodies that HTTPX can still forward.
+        json.dumps(
+            payload, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+        ).encode("utf-8")
+    except (ValueError, RecursionError) as exc:
+        raise ValueError("请求体包含无法编码的 JSON 值或嵌套过深") from exc
     return payload
 
 

@@ -172,7 +172,7 @@ models = [
 | `GET` | `/api/config/models` | 查看虚拟模型的有序引用与结构化 pin |
 | `PUT` | `/api/config` | 校验、原子写入并热重载配置 |
 
-`POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB；独立 Dashboard 代理会在入口执行相同的有界读取，因此 chunked 请求也不能绕过限制。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。
+`POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB；独立 Dashboard 代理会在入口执行相同的有界读取，因此 chunked 请求也不能绕过限制。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。非有限数值（如 `NaN`、`Infinity`、溢出的浮点数）、无法编码为 UTF-8 的字符串及嵌套过深导致入口解析或编码校验失败的正文也会在路由前返回 `400`，不调用上游或生成调用记录。
 
 Router 会将客户端的 `anthropic-version` 与 `anthropic-beta` 请求头转发给最终 Anthropic-compatible Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。SSE 按完整事件校验后转发，初始注释和未完成的事件不会提前锁定 Provider；首个有效事件前的可重试错误即使跨网络数据块，也仍能故障转移。已经交付事件后不会拼接另一家 Provider 的响应。流式客户端中途断开时会立即关闭上游响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
 
