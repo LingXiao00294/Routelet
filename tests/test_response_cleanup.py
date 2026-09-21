@@ -17,7 +17,6 @@ from structlog.contextvars import bound_contextvars, get_contextvars
 from agent_router import app as app_module
 from agent_router.app import _prefetch_first_chunk, create_app
 from agent_router.config import AppConfig
-from agent_router.dashboard import _stream_from_router
 from agent_router.db import CallStore
 from agent_router.recording import CallRecorder
 from agent_router.routing import Router
@@ -83,25 +82,6 @@ async def _fail_response_headers(response: Response, *, legacy: bool) -> None:
     else:
         with pytest.raises(ClientDisconnect):
             await response(_scope(), receive, send)
-
-
-@pytest.mark.parametrize("legacy", [False, True])
-async def test_dashboard_header_failure_closes_unstarted_upstream(legacy: bool) -> None:
-    upstream = _HTTPStream(first_event_ready=True)
-    transport = httpx.MockTransport(
-        lambda request: httpx.Response(200, stream=upstream)
-    )
-    async with httpx.AsyncClient(
-        transport=transport, base_url="https://router.test"
-    ) as client:
-        response = await _stream_from_router(
-            Request(_scope()), client, "/v1/messages", b'{"stream":true}'
-        )
-
-        await _fail_response_headers(response, legacy=legacy)
-
-        assert upstream.close_count == 1
-        assert not upstream.read_started.is_set()
 
 
 async def _messages_response(

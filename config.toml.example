@@ -1,3 +1,5 @@
+# 手工配置参考；agent-router 首次运行会自动创建不含 Provider 和模型的空配置。
+# API 与 Dashboard 共用下方监听地址和端口。
 [server]
 host = "127.0.0.1"
 port = 9456

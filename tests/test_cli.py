@@ -1,470 +1,224 @@
 from __future__ import annotations
 
-import json
-import sqlite3
-from pathlib import Path
-from typing import Any, cast
+import logging
+import subprocess
+import sys
+
+import pytest
+import uvicorn
 
 from agent_router import cli
-from agent_router.db import SCHEMA
-
-SUCCESS_CALL_ID = "75e3917e-0000-4000-8000-000000000001"
-ERROR_CALL_ID = "176091dd-0000-4000-8000-000000000002"
-
-
-def _write_config(path: Path) -> None:
-    path.write_text(
-        """
-[server]
-host = "127.0.0.1"
-port = 9456
-log_level = "info"
-
-[providers.p1]
-type = "anthropic"
-api_key = "sk-secret-1111"
-base_url = "https://api.one.test"
-
-[providers.p1.models.sonnet-first]
-
-[providers.p2]
-type = "anthropic"
-api_key = "sk-secret-2222"
-base_url = "https://api.two.test"
-
-[providers.p2.models.sonnet-second]
-
-[models.sonnet-router]
-pinned_model = { provider = "p1", model = "sonnet-first" }
-models = [
-  { provider = "p1", model = "sonnet-first" },
-  { provider = "p2", model = "sonnet-second" },
-]
-""",
-        encoding="utf-8",
-    )
+from agent_router.cli import app as cli_app
+from agent_router.cli import server
+from agent_router.cli.config_io import load_startup_config
+from agent_router.config import load_config
 
 
-def _create_calls_db(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        conn.executescript(SCHEMA)
-        conn.execute(
-            """INSERT INTO calls (
-                id, timestamp, virtual_model, provider_name, provider_type,
-                provider_model, latency_ms, status, input_tokens, output_tokens,
-                cache_read_tokens, cache_write_tokens, cost_usd
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                SUCCESS_CALL_ID,
-                "2026-06-30T10:00:00+00:00",
-                "sonnet-router",
-                "p1",
-                "anthropic",
-                "sonnet-first",
-                125,
-                "success",
-                100,
-                40,
-                10,
-                5,
-                0.0123,
-            ),
-        )
-        conn.execute(
-            """INSERT INTO calls (
-                id, timestamp, virtual_model, provider_name, provider_type,
-                provider_model, latency_ms, status, error_type, error_message
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                ERROR_CALL_ID,
-                "2026-06-30T10:01:00+00:00",
-                "haiku-router",
-                "p2",
-                "anthropic",
-                "haiku-real",
-                300,
-                "error",
-                "timeout",
-                "upstream timed out",
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def test_root_options_keep_serve_compatibility(monkeypatch):
-    seen: dict[str, str] = {}
-
-    def fake_serve(args):
-        seen["config"] = args.config
-        seen["db"] = args.db
-        return 17
-
-    monkeypatch.setattr(cli, "command_serve", fake_serve)
-
-    assert cli.run(["--config", "custom.toml", "--db", "custom.db"]) == 17
-    assert seen == {"config": "custom.toml", "db": "custom.db"}
-
-
-def test_dashboard_command_runs_separate_server(monkeypatch, tmp_path, capsys):
+@pytest.fixture
+def startup(monkeypatch, tmp_path):
+    # Uvicorn Config disables access-log propagation as a process-wide setting.
+    for name in ("uvicorn.access", "uvicorn.error", "uvicorn.asgi"):
+        logger = logging.getLogger(name)
+        for attribute in ("level", "handlers", "propagate"):
+            monkeypatch.setattr(logger, attribute, getattr(logger, attribute))
+    monkeypatch.chdir(tmp_path)
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "index.html").write_text("<div>dashboard</div>", encoding="utf-8")
-    seen: dict[str, Any] = {}
+    (dist / "index.html").write_text("<html>Dashboard</html>", encoding="utf-8")
+    monkeypatch.setattr(server, "find_dashboard_dist", lambda path: dist)
+    monkeypatch.setattr(server, "setup_logging", lambda **kwargs: None)
+    seen = []
 
-    def fake_create_dashboard_app(dist_path, router_base_url):
-        seen["dist"] = dist_path
-        seen["router_base_url"] = router_base_url
-        return object()
+    def fake_run(instance):
+        instance.started = True
+        seen.append(instance)
 
-    def fake_uvicorn_run(app, **kwargs):
-        seen["app"] = app
-        seen["uvicorn"] = kwargs
-
-    monkeypatch.setattr(cli, "find_dashboard_dist", lambda explicit: dist)
-    monkeypatch.setattr(cli, "create_dashboard_app", fake_create_dashboard_app)
-    monkeypatch.setattr(cli.uvicorn, "run", fake_uvicorn_run)
-
-    exit_code = cli.run(
-        [
-            "dashboard",
-            "--host",
-            "0.0.0.0",
-            "--port",
-            "6180",
-            "--router-url",
-            "http://127.0.0.1:9456",
-            "--allow-remote",
-        ]
-    )
-
-    assert exit_code == 0
-    assert seen["dist"] == dist
-    assert seen["router_base_url"] == "http://127.0.0.1:9456"
-    assert seen["uvicorn"] == {
-        "host": "0.0.0.0",
-        "port": 6180,
-        "log_level": "info",
-        "access_log": False,
-        "log_config": None,
-    }
-    output = capsys.readouterr()
-    assert "Agent Router Dashboard 启动" in output.out
-    assert "没有内置鉴权" in output.err
+    monkeypatch.setattr(server.BrowserServer, "run", fake_run)
+    return seen
 
 
-def test_dashboard_command_refuses_remote_bind_without_opt_in(monkeypatch, capsys):
-    monkeypatch.setattr(
-        cli,
-        "find_dashboard_dist",
-        lambda explicit: (_ for _ in ()).throw(AssertionError("不应查找 dist")),
-    )
+def test_single_command_initializes_config_and_combines_services(startup, tmp_path):
+    assert cli.run([]) == 0
+    config = load_config(tmp_path / "config.toml")
+    assert config.providers == {}
+    assert config.models == {}
+    instance = startup[0]
+    assert instance.config.host == "127.0.0.1"
+    assert instance.config.port == 9456
+    assert instance.browser_url == "http://127.0.0.1:9456"
+    paths = [route.path for route in instance.config.app.routes]
+    assert "/v1/messages" in paths
+    assert "" == paths[-1]  # Dashboard mount is after every API route.
 
-    exit_code = cli.run(["dashboard", "--host", "0.0.0.0"])
 
-    assert exit_code == 2
+def test_startup_overrides_and_no_browser_preserve_existing_config(startup, tmp_path):
+    config = tmp_path / "custom.toml"
+    original = '[server]\nport = 9456\nlog_file = ""\n'
+    config.write_text(original, encoding="utf-8")
+    assert cli.run(["-c", str(config), "--port", "9457", "--no-browser"]) == 0
+    assert startup[0].config.port == 9457
+    assert startup[0].browser_url is None
+    assert config.read_text(encoding="utf-8") == original
+
+
+def test_invalid_config_is_reported_without_overwriting(startup, tmp_path, capsys):
+    config = tmp_path / "config.toml"
+    config.write_text("invalid [", encoding="utf-8")
+    assert cli.run([]) == 1
+    assert not startup
+    assert config.read_text(encoding="utf-8") == "invalid ["
+    assert "读取配置文件失败" in capsys.readouterr().err
+
+
+def test_missing_assets_prevent_partial_startup(startup, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(server, "find_dashboard_dist", lambda path: None)
+    assert cli.run([]) == 1
+    assert not startup
+    assert not (tmp_path / "config.toml").exists()
+    assert "bun run build" in capsys.readouterr().err
+
+
+def test_remote_bind_requires_opt_in(startup, capsys):
+    assert cli.run(["--host", "0.0.0.0"]) == 2
+    assert not startup
     assert "--allow-remote" in capsys.readouterr().err
+    assert cli.run(["--host", "0.0.0.0", "--allow-remote"]) == 0
+    assert startup[0].browser_url == "http://127.0.0.1:9456"
 
 
-def test_dashboard_command_reports_missing_dist(monkeypatch, capsys):
-    monkeypatch.setattr(cli, "find_dashboard_dist", lambda explicit: None)
-
-    exit_code = cli.run(["dashboard"])
-
-    assert exit_code == 1
-    assert "未找到 dashboard 静态文件" in capsys.readouterr().err
-
-
-def test_dashboard_entrypoint_prefixes_dashboard_command(monkeypatch):
-    seen: dict[str, int] = {}
-
-    def fake_dashboard(args):
-        seen["port"] = args.port
-        return 23
-
-    monkeypatch.setattr(cli, "command_dashboard", fake_dashboard)
-
-    assert cli.run_dashboard(["--port", "6181"]) == 23
-    assert seen == {"port": 6181}
-
-
-def test_config_init_copies_example(tmp_path, capsys):
-    example = tmp_path / "config.toml.example"
-    target = tmp_path / "config.toml"
-    example.write_text("[server]\nport = 9456\n", encoding="utf-8")
-
-    exit_code = cli.run(
-        ["config", "init", "--config", str(target), "--example", str(example)]
-    )
-
-    assert exit_code == 0
-    assert target.read_text(encoding="utf-8") == "[server]\nport = 9456\n"
-    assert "已生成配置文件" in capsys.readouterr().out
-
-
-def test_config_init_refuses_existing_file(tmp_path, capsys):
-    example = tmp_path / "config.toml.example"
-    target = tmp_path / "config.toml"
-    example.write_text("[server]\nport = 9456\n", encoding="utf-8")
-    target.write_text("[server]\nport = 1\n", encoding="utf-8")
-
-    exit_code = cli.run(
-        ["config", "init", "--config", str(target), "--example", str(example)]
-    )
-
-    assert exit_code == 1
-    assert target.read_text(encoding="utf-8") == "[server]\nport = 1\n"
-    assert "已存在" in capsys.readouterr().err
-
-
-def test_config_show_masks_api_keys(tmp_path, capsys):
-    config = tmp_path / "config.toml"
-    _write_config(config)
-
-    exit_code = cli.run(["config", "show", "--config", str(config), "--format", "json"])
-
-    assert exit_code == 0
-    data = json.loads(capsys.readouterr().out)
-    assert data["providers"]["p1"]["api_key"] == "sk-s******1111"
-    assert data["providers"]["p1"]["has_key"] is True
-    assert "sk-secret-1111" not in json.dumps(data)
-
-
-def test_config_validate_outputs_route_summary(tmp_path, capsys):
-    config = tmp_path / "config.toml"
-    _write_config(config)
-
-    exit_code = cli.run(
-        ["config", "validate", "--config", str(config), "--no-env-file"]
-    )
-
-    assert exit_code == 0
-    out = capsys.readouterr().out
-    assert "配置有效" in out
-    assert (
-        "sonnet-router [pin=p1:sonnet-first]: "
-        "p1:sonnet-first(p1) -> p2:sonnet-second(p2)"
-    ) in out
-
-
-def test_serve_allows_unresolved_api_key_for_dashboard_setup(
-    monkeypatch, tmp_path, capsys
-):
-    config = tmp_path / "config.toml"
-    config.write_text(
-        """
-[server]
-host = "127.0.0.1"
-port = 9456
-log_file = ""
-
-[providers.p1]
-type = "anthropic"
-api_key = "${MISSING_API_KEY_FOR_STARTUP_TEST}"
-base_url = "https://api.one.test"
-
-[providers.p1.models.sonnet-first]
-
-[models.sonnet-router]
-pinned_model = { provider = "p1", model = "sonnet-first" }
-models = [{ provider = "p1", model = "sonnet-first" }]
-""",
+def test_unresolved_keys_allow_dashboard_setup(startup, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("MISSING_STARTUP_KEY", raising=False)
+    (tmp_path / "config.toml").write_text(
+        '[providers.test]\ntype = "anthropic"\napi_key = "${MISSING_STARTUP_KEY}"\n'
+        'base_url = "https://example.test"\n',
         encoding="utf-8",
     )
-    seen: dict[str, object] = {}
-
-    def fake_uvicorn_run(app, **kwargs):
-        seen["app"] = app
-        seen["uvicorn"] = kwargs
-
-    monkeypatch.delenv("MISSING_API_KEY_FOR_STARTUP_TEST", raising=False)
-    monkeypatch.setattr(cli.uvicorn, "run", fake_uvicorn_run)
-
-    exit_code = cli.run(
-        [
-            "serve",
-            "--config",
-            str(config),
-            "--no-env-file",
-            "--db",
-            str(tmp_path / "calls.db"),
-        ]
-    )
-
-    assert exit_code == 0
-    uvicorn_kwargs = cast(dict[str, Any], seen["uvicorn"])
-    assert uvicorn_kwargs["host"] == "127.0.0.1"
+    assert cli.run(["--no-env-file"]) == 0
     assert "api_key 未解析" in capsys.readouterr().err
 
 
-def test_serve_refuses_remote_bind_without_opt_in(monkeypatch, tmp_path, capsys):
+def test_env_file_is_loaded_and_can_be_disabled(monkeypatch, tmp_path):
+    key = "AGENT_ROUTER_TEST_STARTUP_KEY"
+    monkeypatch.delenv(key, raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text(f"{key}=secret\n", encoding="utf-8")
     config = tmp_path / "config.toml"
-    _write_config(config)
-    monkeypatch.setattr(
-        cli.uvicorn,
-        "run",
-        lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("不应启动 uvicorn")
-        ),
+    config.write_text(
+        '[providers.test]\ntype = "anthropic"\n'
+        f'api_key = "${{{key}}}"\nbase_url = "https://example.test"\n',
+        encoding="utf-8",
     )
-
-    exit_code = cli.run(
-        [
-            "serve",
-            "--config",
-            str(config),
-            "--host",
-            "0.0.0.0",
-            "--no-env-file",
-            "--db",
-            str(tmp_path / "calls.db"),
-        ]
+    disabled = load_startup_config(
+        str(config), env_file=str(env_file), no_env_file=True
     )
-
-    assert exit_code == 2
-    assert "--allow-remote" in capsys.readouterr().err
-
-
-def test_loopback_bind_detection_accepts_ipv4_ipv6_and_localhost(capsys):
-    assert cli._allow_bind("127.0.0.1", False)
-    assert cli._allow_bind("::1", False)
-    assert cli._allow_bind("[::1]", False)
-    assert cli._allow_bind("localhost", False)
-    assert capsys.readouterr().err == ""
-
-
-def test_models_lists_routes_in_priority_order(tmp_path, capsys):
-    config = tmp_path / "config.toml"
-    _write_config(config)
-
-    exit_code = cli.run(["models", "--config", str(config), "--format", "json"])
-
-    assert exit_code == 0
-    rows = json.loads(capsys.readouterr().out)
-    assert [row["model"] for row in rows] == ["sonnet-first", "sonnet-second"]
-    assert [row["priority"] for row in rows] == [1, 2]
-
-
-def test_stats_reads_summary_without_writing(tmp_path, capsys):
-    db_path = tmp_path / "calls.db"
-    _create_calls_db(db_path)
-
-    exit_code = cli.run(["stats", "--db", str(db_path), "--format", "json"])
-
-    assert exit_code == 0
-    summary = json.loads(capsys.readouterr().out)
-    assert summary["total_calls"] == 2
-    assert summary["success_count"] == 1
-    assert summary["error_count"] == 1
-    assert summary["success_rate"] == 50.0
-    assert summary["total_input_tokens"] == 100
-    assert summary["total_output_tokens"] == 40
-
-
-def test_calls_list_filters_by_status(tmp_path, capsys):
-    db_path = tmp_path / "calls.db"
-    _create_calls_db(db_path)
-
-    exit_code = cli.run(
-        ["calls", "list", "--db", str(db_path), "--status", "error", "--format", "json"]
+    assert disabled.providers["test"].api_key == f"${{{key}}}"
+    enabled = load_startup_config(
+        str(config), env_file=str(env_file), no_env_file=False
     )
-
-    assert exit_code == 0
-    rows = json.loads(capsys.readouterr().out)
-    assert [row["id"] for row in rows] == [ERROR_CALL_ID]
-    assert rows[0]["error_type"] == "timeout"
+    assert enabled.providers["test"].api_key == "secret"
 
 
-def test_calls_show_outputs_single_record(tmp_path, capsys):
-    db_path = tmp_path / "calls.db"
-    _create_calls_db(db_path)
+@pytest.mark.parametrize("port", ["0", "65536", "abc", "-1"])
+def test_invalid_ports_fail_before_startup(port, startup, capsys):
+    assert cli.run(["--port", port]) == 2
+    assert not startup
+    assert "Traceback" not in capsys.readouterr().err
 
-    exit_code = cli.run(
-        ["calls", "show", SUCCESS_CALL_ID, "--db", str(db_path), "--format", "json"]
+
+@pytest.mark.parametrize(
+    "command",
+    ["serve", "dashboard", "config", "models", "providers", "calls", "stats", "doctor"],
+)
+def test_removed_subcommands_are_rejected(command, startup, capsys):
+    assert cli.run([command]) == 2
+    assert not startup
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_help_and_version_do_not_start_service(startup, capsys):
+    assert cli.run(["--help"]) == 0
+    assert "--no-browser" in capsys.readouterr().out
+    assert cli.run(["--version"]) == 0
+    assert not startup
+
+
+@pytest.mark.parametrize("module", ["agent_router.main", "agent_router.cli"])
+def test_module_entrypoints_work_outside_repository(module, tmp_path):
+    result = subprocess.run(
+        [sys.executable, "-m", module, "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
     )
-
-    assert exit_code == 0
-    row = json.loads(capsys.readouterr().out)
-    assert row["id"] == SUCCESS_CALL_ID
-    assert row["provider_model"] == "sonnet-first"
+    assert result.returncode == 0, result.stderr
+    assert "--no-browser" in result.stdout
 
 
-def test_calls_show_accepts_unique_short_id_prefix(tmp_path, capsys):
-    db_path = tmp_path / "calls.db"
-    _create_calls_db(db_path)
+def test_process_entrypoint_preserves_exit_code(monkeypatch):
+    monkeypatch.setattr(cli_app, "command_start", lambda **kwargs: 17)
+    with pytest.raises(SystemExit) as exc:
+        cli.main([])
+    assert exc.value.code == 17
 
-    exit_code = cli.run(
-        [
-            "calls",
-            "show",
-            SUCCESS_CALL_ID[:8],
-            "--db",
-            str(db_path),
-            "--format",
-            "json",
-        ]
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("127.0.0.1", "http://127.0.0.1:9456"),
+        ("::1", "http://[::1]:9456"),
+        ("::", "http://[::1]:9456"),
+    ],
+)
+def test_browser_url(host, expected):
+    assert server._browser_url(host, 9456) == expected
+
+
+@pytest.mark.parametrize(
+    "started, disabled", [(True, False), (False, False), (True, True)]
+)
+async def test_browser_opens_only_after_successful_startup(
+    monkeypatch, started, disabled
+):
+    events = []
+
+    async def fake_startup(instance, sockets=None):
+        events.append("startup")
+        instance.started = started
+
+    def fake_open(url):
+        events.append(url)
+        return True
+
+    monkeypatch.setattr(uvicorn.Server, "startup", fake_startup)
+    monkeypatch.setattr(server.webbrowser, "open", fake_open)
+    url = "http://127.0.0.1:9456"
+    instance = server.BrowserServer(
+        uvicorn.Config("unused", log_config=None), None if disabled else url
     )
-
-    assert exit_code == 0
-    row = json.loads(capsys.readouterr().out)
-    assert row["id"] == SUCCESS_CALL_ID
+    await instance.startup()
+    assert events == (["startup", url] if started and not disabled else ["startup"])
 
 
-def test_calls_show_reports_ambiguous_short_id_prefix(tmp_path, capsys):
-    db_path = tmp_path / "calls.db"
-    _create_calls_db(db_path)
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            """INSERT INTO calls (
-                id, timestamp, virtual_model, provider_name, provider_type,
-                provider_model, latency_ms, status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                "75e3917e-9999-4000-8000-000000000003",
-                "2026-06-30T10:02:00+00:00",
-                "sonnet-router",
-                "p1",
-                "anthropic",
-                "sonnet-first",
-                200,
-                "success",
-            ),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+async def test_browser_failure_does_not_stop_service(monkeypatch, capsys):
+    async def fake_startup(instance, sockets=None):
+        instance.started = True
 
-    exit_code = cli.run(["calls", "show", "75e3917e", "--db", str(db_path)])
+    def fail_open(url):
+        raise OSError("no desktop")
 
-    assert exit_code == 1
-    assert "匹配到多条调用记录" in capsys.readouterr().err
+    monkeypatch.setattr(uvicorn.Server, "startup", fake_startup)
+    monkeypatch.setattr(server.webbrowser, "open", fail_open)
+    instance = server.BrowserServer(
+        uvicorn.Config("unused", log_config=None), "http://localhost:9456"
+    )
+    await instance.startup()
+    assert instance.started
+    assert "http://localhost:9456" in capsys.readouterr().err
 
 
-def test_typer_usage_errors_do_not_render_tracebacks(capsys):
-    calls_exit_code = cli.run(["calls"])
-    calls_output = capsys.readouterr()
-    show_exit_code = cli.run(["calls", "show"])
-    show_output = capsys.readouterr()
-
-    assert calls_exit_code != 0
-    assert show_exit_code != 0
-    combined = calls_output.out + calls_output.err + show_output.out + show_output.err
-    assert "Traceback" not in combined
-    assert "NoArgsIsHelpError" not in combined
-    assert "MissingParameter" not in combined
-
-
-def test_provider_ref_counts_include_distinct_failover_pin():
-    raw = {
-        "models": {
-            "router": {
-                "pinned_model": {"provider": "pinned", "model": "special"},
-                "models": [{"provider": "primary", "model": "regular"}],
-            }
-        }
-    }
-
-    assert cli._provider_ref_counts(raw) == {"primary": 1, "pinned": 1}
+def test_startup_failure_returns_nonzero(startup, monkeypatch):
+    monkeypatch.setattr(server.BrowserServer, "run", lambda instance: None)
+    assert cli.run([]) == 1

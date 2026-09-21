@@ -2,7 +2,7 @@
 
 本地 LLM API 路由代理，将虚拟模型名映射到多个 provider，按优先级进行故障转移。
 
-```
+``` text
 Claude Code → router (本地 FastAPI) → 智谱 API      (优先级 1)
                                     → 火山引擎      (优先级 2, 故障转移)
                                     → DeepSeek      (优先级 3, 故障转移)
@@ -10,79 +10,49 @@ Claude Code → router (本地 FastAPI) → 智谱 API      (优先级 1)
 
 ## 快速开始
 
+首次从源码安装时，构建前端并安装为用户级工具：
+
 ```bash
-# 1. 安装依赖
-uv sync
-
-# 2. 可选：配置环境变量
-cp .env.example .env   # 可先跳过，之后也可通过 dashboard 填写 API key
-
-# 3. 创建路由配置
-cp config.toml.example config.toml   # 可直接启动，之后通过 dashboard 添加 provider
-
-# 4. 启动 router
-uv run agent-router serve
-
-# 5. 单独启动 dashboard（另一个终端）
-uv run agent-router dashboard
-
-# 6. 验证 router
-curl http://127.0.0.1:9456/health
+cd dashboard
+bun install --frozen-lockfile
+bun run build
+cd ..
+uv tool install .
 ```
 
-router 默认监听 `http://127.0.0.1:9456`，dashboard 默认监听 `http://127.0.0.1:5173` 并代理到 router。
+以后只需一个命令：
+
+```bash
+agent-router
+```
+
+程序在同一个进程、同一个端口提供 API 和 Dashboard，并在监听成功后自动打开 `http://127.0.0.1:9456`。首次运行会在当前目录创建空的 `config.toml`，可直接在页面添加 Provider、实际模型和虚拟模型，再连接客户端。已有配置不会被覆盖；格式错误时启动失败并显示原因。按 `Ctrl+C` 同时停止前后端服务。
+
+源码开发也可使用 `uv sync --frozen` 后执行 `uv run agent-router`。安装包包含构建好的前端，使用时无需 Node.js / Bun。如果命令不在 PATH 中，运行 `uv tool update-shell` 后重开终端。
+
+## 启动选项
+
+```bash
+agent-router --help
+agent-router --no-browser                    # 无桌面环境或不自动打开浏览器
+agent-router -c config.toml --db calls.db     # 指定配置和数据库
+agent-router --host 127.0.0.1 --port 9457     # 同时更改 API 与页面的监听地址
+agent-router --env-file custom.env           # 默认加载当前目录的 .env
+agent-router --no-env-file                   # 不加载环境变量文件
+agent-router --dist dashboard/dist          # 指定前端构建目录
+```
+
+配置、调用记录、统计、Provider 和模型统一通过 Dashboard 管理。旧的 `serve`、`dashboard`、`config`、`models`、`providers`、`calls`、`stats`、`doctor` 子命令和 `agent-router-dashboard` 入口已移除；已有启动脚本应改为 `agent-router`。重新执行 `uv tool install --force .` 可更新本地安装。
+
+配置、数据库、日志和 `.env` 的默认路径均相对于启动目录，建议始终在固定目录启动。未解析的 `${ENV_VAR}` 不阻止页面启动，但实际请求会跳过对应 Provider。没有可用模型时，请先在页面完成配置。
+
+未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/agent_router-0.1.0-py3-none-any.whl` 安装。`config.toml.example` 仍可作为手工配置参考，首次启动自动生成的是空配置。
 
 ## 安全边界
 
 Router 不校验客户端传入的 Anthropic token，Dashboard 还能读取调用详情、修改配置和重置熔断器；`calls.db` 会保存请求与响应正文（单项超过 256 KiB 时保存带 `_truncated` 标记的有界预览），其中仍可能包含提示词、模型输出和其他敏感数据。请限制配置文件、数据库、日志及备份的文件权限，并按自身保留策略清理。
 
-CLI 默认拒绝绑定 `0.0.0.0`、`::` 或其他非回环地址。只有在受信网络或已配置鉴权与 TLS 的反向代理之后，才应显式添加 `--allow-remote`；该开关只确认风险，不会为服务增加鉴权。Router 与 Dashboard 都应保持相同的网络边界。
-
-也可以先构建 dashboard，再安装成用户级工具：
-
-```bash
-cd dashboard
-bun install
-bun run build
-cd ..
-
-uv tool install .
-agent-router serve
-agent-router-dashboard
-```
-
-## CLI
-
-CLI 基于 Typer 实现。`agent-router` 默认等价于 `agent-router serve`，旧启动方式仍然可用。Dashboard 已从 router 中拆出，可以用 `agent-router dashboard` 子命令或独立的 `agent-router-dashboard` 命令启动。
-
-```bash
-uv run agent-router --help
-
-# 启动 router
-uv run agent-router
-uv run agent-router serve -c config.toml --db calls.db --host 127.0.0.1 --port 9456
-
-# 启动 dashboard
-uv run agent-router dashboard --router-url http://127.0.0.1:9456
-uv run agent-router-dashboard --router-url http://127.0.0.1:9456
-
-# 配置管理
-uv run agent-router config init
-uv run agent-router config validate -c config.toml
-uv run agent-router config show -c config.toml --format json
-
-# 路由排查
-uv run agent-router providers -c config.toml
-uv run agent-router models -c config.toml
-uv run agent-router doctor -c config.toml --db calls.db
-
-# 调用记录
-uv run agent-router stats --db calls.db
-uv run agent-router calls list --db calls.db --limit 20 --status error
-uv run agent-router calls show <call-id> --db calls.db --format json
-```
-
-`config init` 默认从 `config.toml.example` 生成 `config.toml`，目标文件已存在时不会覆盖；确需覆盖时添加 `--force`。`config validate`、`doctor` 和 `serve` 默认加载 `.env`，可用 `--no-env-file` 跳过。`serve` 允许 `api_key = "${ENV_VAR}"` 暂未解析，以便新环境先启动后端和 dashboard；实际路由时这类 provider 会被跳过。`config validate` 仍按严格模式检查，适合在正式使用前确认环境变量和配置完整。`dashboard` 默认查找安装包内或源码目录下已构建的 `dashboard/dist`；找不到时需要先执行 `cd dashboard && bun install && bun run build` 后重新安装，或通过 `--dist` 指向构建目录。
+默认拒绝绑定 `0.0.0.0`、`::` 或其他非回环地址。只有在受信网络或已配置鉴权与 TLS 的反向代理之后，才应显式添加 `--allow-remote`；该开关只确认风险，不会为服务增加鉴权。
 
 ### 配合 Claude Code 使用
 
@@ -143,7 +113,7 @@ models = [
 ]
 ```
 
-`${ENV_VAR}` 会自动从环境变量或 `.env` 文件展开。未设置时不会阻止 `serve` 启动，方便先打开 dashboard 修改配置；包含未解析 key 的 provider 在实际请求路由时会被跳过，全部 provider 都不可用时返回明确错误。支持 `type = "anthropic"`（Anthropic Messages API 兼容 provider）。
+`${ENV_VAR}` 会自动从环境变量或 `.env` 文件展开。未设置时不会阻止 `agent-router` 启动，方便先打开 dashboard 修改配置；包含未解析 key 的 provider 在实际请求路由时会被跳过，全部 provider 都不可用时返回明确错误。支持 `type = "anthropic"`（Anthropic Messages API 兼容 provider）。
 
 当前版本仅实现 `anthropic` 类型。`openai` 协议转换仍在规划中；配置加载和 Dashboard 都不会再接受一个运行时无法调用的 `openai` 类型。
 
@@ -156,7 +126,7 @@ models = [
 ## API 端点
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `GET` | `/health` | 健康检查 |
 | `GET` | `/v1/models` | 列出虚拟模型（Anthropic 格式） |
 | `POST` | `/v1/messages` | 聊天接口，支持 `stream: true/false` |
@@ -172,7 +142,7 @@ models = [
 | `GET` | `/api/config/models` | 查看虚拟模型的有序引用与结构化 pin |
 | `PUT` | `/api/config` | 校验、原子写入并热重载配置 |
 
-`POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB；独立 Dashboard 代理会在入口执行相同的有界读取，因此 chunked 请求也不能绕过限制。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。非有限数值（如 `NaN`、`Infinity`、溢出的浮点数）、无法编码为 UTF-8 的字符串及嵌套过深导致入口解析或编码校验失败的正文也会在路由前返回 `400`，不调用上游或生成调用记录。
+`POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB，包括 chunked 请求；Dashboard 与客户端直接使用同一组 API。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。非有限数值（如 `NaN`、`Infinity`、溢出的浮点数）、无法编码为 UTF-8 的字符串及嵌套过深导致入口解析或编码校验失败的正文也会在路由前返回 `400`，不调用上游或生成调用记录。
 
 Router 会将客户端的 `anthropic-version` 与 `anthropic-beta` 请求头转发给最终 Anthropic-compatible Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。SSE 按完整事件校验后转发，初始注释和未完成的事件不会提前锁定 Provider；首个有效事件前的可重试错误即使跨网络数据块，也仍能故障转移。已经交付事件后不会拼接另一家 Provider 的响应。流式客户端中途断开时会立即关闭上游响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
 
@@ -198,7 +168,7 @@ SSE 支持流开头的 UTF-8 BOM，包括 BOM 字节跨数据块的情况；它�
 Move-Item calls.db calls.db.pre-pricing.bak
 ```
 
-之后重新运行 `uv run agent-router serve -c config.toml --db calls.db`，程序会创建完整的新数据库。需要保留的旧调用历史仍在备份文件中。
+之后重新运行 `uv run agent-router -c config.toml --db calls.db`，程序会创建完整的新数据库。需要保留的旧调用历史仍在备份文件中。
 
 ## Dashboard
 
@@ -210,7 +180,7 @@ bun test          # Dashboard 状态逻辑与展示辅助函数测试
 bun run build     # 生产构建 → dashboard/dist/
 ```
 
-构建后通过 `uv run agent-router dashboard` 启动独立面板，访问 `http://127.0.0.1:5173`。代理会删除固定及 `Connection` 动态声明的 hop-by-hop 请求/响应头，避免把只属于单段连接的控制信息带入下一跳。
+构建后通过 `uv run agent-router` 同时启动 API 和面板，访问 `http://127.0.0.1:9456`。`bun run dev` 仅用于前端热更新开发，Vite 在 5173 端口代理请求到 9456。
 
 为防止误清空上游，Dashboard 保存配置时要求至少保留一个 Provider 和一个虚拟模型；每个虚拟模型至少选择一个实际模型。
 保存已成功但随后重新加载失败时，面板会保留已保存状态并提示数据可能过期；已保存 Provider 的密钥仍可留空保留，保存期间的新编辑也会保留。自动刷新会等待当前批次完成，同一筛选条件的在途查询会复用，慢请求不会因轮询重叠而一直无法显示结果。
@@ -234,11 +204,16 @@ uv run ty check src tests              # 类型检查
 
 ## 项目结构
 
-```
+``` text
 src/agent_router/
 ├── main.py              # console_scripts 薄入口
-├── cli.py               # CLI 子命令：serve/dashboard/config/models/providers/calls/stats/doctor
-├── dashboard.py         # 独立 dashboard 静态服务 + API 代理
+├── cli/
+│   ├── __init__.py      # 单一启动入口 main/run
+│   ├── __main__.py      # python -m agent_router.cli
+│   ├── app.py           # argparse 启动选项与退出码
+│   ├── server.py        # API + Dashboard 启动，监听成功后打开浏览器
+│   └── config_io.py     # 首次运行空配置、环境变量加载
+├── dashboard.py         # 同进程静态文件与 SPA 路由回退
 ├── app.py               # FastAPI 应用 + 路由处理
 ├── config.py            # TOML 加载 + ${ENV_VAR} 展开 + Pydantic 校验
 ├── routing.py           # 核心：优先级链 + 故障转移
