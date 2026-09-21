@@ -49,11 +49,11 @@ describe("actual-model catalog mutations", () => {
     expect(store.updateActualModel("zai", "glm-5", { output_price_per_million: 4 })).toBe(true);
     expect(store.draft.providers.zai.models["glm-5"]).toEqual({ output_price_per_million: 4 });
 
-    expect(store.removeActualModel("zai", "glm-5")).toEqual([]);
+    store.removeActualModel("zai", "glm-5");
     expect(store.draft.providers.zai.models["glm-5"]).toBeUndefined();
   });
 
-  test("keeps data unchanged when an actual model is referenced", () => {
+  test("deletes a virtual model when its last actual model is removed", () => {
     const store = useConfigStore();
     store.draft = validConfig();
     store.models = {
@@ -62,13 +62,85 @@ describe("actual-model catalog mutations", () => {
         models: [{ provider: "zai", model: "existing" }],
       },
     };
-    const before = JSON.parse(JSON.stringify(store.draft.providers.zai.models)) as Record<
-      string,
-      unknown
-    >;
+    store.removeActualModel("zai", "existing");
+    expect(store.draft.providers.zai.models).toEqual({});
+    expect(store.models).toEqual({});
+    expect(store.buildPayload().models).toEqual({});
+    expect(store.validate()).toBe(true);
+  });
 
-    expect(store.removeActualModel("zai", "existing")).toEqual(["routerA"]);
-    expect(store.draft.providers.zai.models).toEqual(before);
+  test.each(["sticky", "failover"] as const)(
+    "%s deletion cleans every reference and pin while preserving other candidates",
+    (mode) => {
+      const store = useConfigStore();
+      store.draft = validConfig();
+      store.draft.router.mode = mode;
+      store.draft.providers.other = {
+        ...store.draft.providers.zai,
+        models: { existing: {}, fallback: {} },
+      };
+      const deleted = { provider: "zai", model: "existing" };
+      const remaining = [
+        { provider: "other", model: "existing" },
+        { provider: "other", model: "fallback" },
+      ];
+      store.models = {
+        routerA: { models: [deleted, ...remaining], pinned_model: deleted },
+        routerB: { models: [...remaining, deleted], pinned_model: remaining[1] },
+        stalePin: { models: [...remaining], pinned_model: deleted },
+      };
+
+      store.removeActualModel("zai", "existing");
+
+      for (const name of ["routerA", "routerB", "stalePin"]) {
+        expect(store.models[name].models).toEqual(remaining);
+      }
+      expect(store.models.routerA.pinned_model).toEqual(mode === "sticky" ? remaining[0] : null);
+      expect(store.models.stalePin.pinned_model).toEqual(mode === "sticky" ? remaining[0] : null);
+      expect(store.models.routerB.pinned_model).toEqual(remaining[1]);
+      expect(store.draft.providers.other.models.existing).toEqual({});
+      expect(store.validate()).toBe(true);
+    },
+  );
+
+  test("provider deletion removes all its references and allows an empty config", () => {
+    const store = useConfigStore();
+    store.draft = validConfig();
+    store.draft.providers.zai.models.second = {};
+    store.models = {
+      routerA: {
+        models: [
+          { provider: "zai", model: "existing" },
+          { provider: "zai", model: "second" },
+        ],
+        pinned_model: { provider: "zai", model: "second" },
+      },
+    };
+
+    store.removeProvider("zai");
+
+    expect(store.buildPayload().providers).toEqual({});
+    expect(store.buildPayload().models).toEqual({});
+    expect(store.validate()).toBe(true);
+  });
+
+  test("removing a virtual model then replacing its actual model leaves no stale references", () => {
+    const store = useConfigStore();
+    store.draft = validConfig();
+    store.models = {
+      routerA: {
+        models: [{ provider: "zai", model: "existing" }],
+        pinned_model: { provider: "zai", model: "existing" },
+      },
+    };
+
+    store.removeModel("routerA");
+    store.removeActualModel("zai", "existing");
+    store.addActualModel("zai", "renamed");
+
+    expect(store.buildPayload().models).toEqual({});
+    expect(store.buildPayload().providers.zai.models).toEqual({ renamed: {} });
+    expect(store.validate()).toBe(true);
   });
 
   test("updates an existing actual model by its exact key", () => {

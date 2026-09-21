@@ -156,17 +156,12 @@ function saveActualModel() {
 async function removeActualModel(provider: string, model: string) {
   const ok = await confirm.confirm({
     title: "删除实际模型",
-    message: `确定删除「${formatActualModel(provider, model)}」？`,
+    message: `确定删除「${formatActualModel(provider, model)}」？将同步移除虚拟模型中的引用，没有剩余候选的虚拟模型也会删除；指定模型被删除时将改用首个剩余候选。`,
     confirmText: "删除",
     danger: true,
   });
   if (!ok) return;
-  const referencedBy = store.removeActualModel(provider, model);
-  if (referencedBy.length) {
-    modelError.value = `仍被虚拟模型引用：${referencedBy.join("、")}。请先保存引用移除。`;
-    toast.error(modelError.value);
-    return;
-  }
+  store.removeActualModel(provider, model);
   toast.success(`${formatActualModel(provider, model)} 已删除，保存后生效`);
   closeActualModel();
 }
@@ -174,20 +169,12 @@ async function removeActualModel(provider: string, model: string) {
 async function remove(name: string) {
   const ok = await confirm.confirm({
     title: "删除 Provider",
-    message: `确定删除「${name}」？`,
+    message: `确定删除「${name}」？将同步移除其所有模型的引用，没有剩余候选的虚拟模型也会删除；指定模型被删除时将改用首个剩余候选。`,
     confirmText: "删除",
     danger: true,
   });
   if (ok) {
-    const referencedBy = store.removeProvider(name);
-    if (referencedBy.length) {
-      fieldErrors.value = {
-        ...fieldErrors.value,
-        providers: `Provider「${name}」仍被虚拟模型引用：${referencedBy.join("、")}。请先保存引用移除。`,
-      };
-      toast.error(fieldErrors.value.providers);
-      return;
-    }
+    store.removeProvider(name);
     toast.success(`Provider「${name}」已删除，保存后生效`);
     if (editing.value === name) editing.value = null;
   }

@@ -158,13 +158,6 @@ export interface AppConfig {
   models: Record<string, VirtualModelConfig>;
 }
 
-export interface ConfigReferenceError {
-  code: "provider_in_use" | "model_in_use";
-  provider: string;
-  model?: string;
-  referenced_by: string[];
-}
-
 export type CircuitBreakerMap = Record<string, CircuitState>;
 
 export interface HealthResponse {
