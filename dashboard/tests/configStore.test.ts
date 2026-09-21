@@ -10,7 +10,7 @@ function validConfig(): AppConfig {
       port: 9456,
       log_level: "info",
       log_file: "",
-      log_max_bytes: 0,
+      log_max_bytes: 10_485_760,
       log_backup_count: 0,
     },
     router: {
@@ -102,5 +102,38 @@ describe("actual-model catalog mutations", () => {
     expect(store.validate()).toBe(false);
     expect(store.fieldErrors["models.routerA.ref.1"]).toContain("不能重复");
     expect(store.fieldErrors["models.routerA.ref.2.model"]).toContain("不存在");
+  });
+
+  test("matches backend lower bounds for circuit and log settings", () => {
+    const store = useConfigStore();
+    store.draft = validConfig();
+    store.draft.server.log_max_bytes = 0;
+    store.draft.router.failure_threshold = 0;
+    store.draft.providers.zai.failure_threshold = 0;
+
+    expect(store.validate()).toBe(false);
+    expect(store.fieldErrors["server.log_max_bytes"]).toContain("> 0");
+    expect(store.fieldErrors["router.failure_threshold"]).toContain("≥ 1");
+    expect(store.fieldErrors["providers.zai.failure_threshold"]).toContain("≥ 1");
+  });
+
+  test("matches backend provider base URL rules", () => {
+    const invalidUrls = [
+      "/relative",
+      "ftp://provider.test",
+      " https://provider.test ",
+      "https://provider.test?token=secret",
+      "https://provider.test#fragment",
+      "https://user:password@provider.test",
+    ];
+
+    for (const baseUrl of invalidUrls) {
+      const store = useConfigStore();
+      store.draft = validConfig();
+      store.draft.providers.zai.base_url = baseUrl;
+
+      expect(store.validate()).toBe(false);
+      expect(store.fieldErrors["providers.zai.base_url"]).toContain("绝对 HTTP(S) URL");
+    }
   });
 });

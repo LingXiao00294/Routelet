@@ -3,7 +3,6 @@ import type {
   AppConfig,
   LogLevel,
   ProviderConfig,
-  ProviderType,
   RouterConfig,
   ServerConfig,
   VirtualModelConfig,
@@ -63,7 +62,6 @@ export function normalizeProviderConfig(
   raw: Partial<ProviderConfig> | Record<string, unknown> | null | undefined,
 ): ProviderConfig {
   const provider = (raw ?? {}) as Record<string, unknown>;
-  const type: ProviderType = provider.type === "openai" ? "openai" : "anthropic";
   const rawModels =
     provider.models && typeof provider.models === "object"
       ? (provider.models as Record<string, unknown>)
@@ -73,7 +71,7 @@ export function normalizeProviderConfig(
     models[name] = normalizeActualModel(model);
   }
   return {
-    type,
+    type: "anthropic",
     api_key: typeof provider.api_key === "string" ? provider.api_key : "",
     base_url: typeof provider.base_url === "string" ? provider.base_url : "",
     timeout_seconds: asFinite(provider.timeout_seconds, 120),

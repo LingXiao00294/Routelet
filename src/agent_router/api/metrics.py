@@ -37,6 +37,7 @@ def create_metrics_router(store: CallStore) -> APIRouter:
         provider: str | None = None,
         provider_model: str | None = None,
     ):
+        """Return one page of call summaries without persisted detail bodies."""
         calls, total = await store.list_calls(
             page=page,
             size=size,
@@ -55,6 +56,7 @@ def create_metrics_router(store: CallStore) -> APIRouter:
 
     @router.get("/api/calls/{call_id}")
     async def get_call(call_id: str):
+        """Return the complete persisted detail for one call."""
         call = await store.get_call(call_id)
         if call is None:
             raise HTTPException(status_code=404, detail="call not found")

@@ -136,6 +136,7 @@ def test_dashboard_command_runs_separate_server(monkeypatch, tmp_path, capsys):
             "6180",
             "--router-url",
             "http://127.0.0.1:9456",
+            "--allow-remote",
         ]
     )
 
@@ -149,7 +150,22 @@ def test_dashboard_command_runs_separate_server(monkeypatch, tmp_path, capsys):
         "access_log": False,
         "log_config": None,
     }
-    assert "Agent Router Dashboard 启动" in capsys.readouterr().out
+    output = capsys.readouterr()
+    assert "Agent Router Dashboard 启动" in output.out
+    assert "没有内置鉴权" in output.err
+
+
+def test_dashboard_command_refuses_remote_bind_without_opt_in(monkeypatch, capsys):
+    monkeypatch.setattr(
+        cli,
+        "find_dashboard_dist",
+        lambda explicit: (_ for _ in ()).throw(AssertionError("不应查找 dist")),
+    )
+
+    exit_code = cli.run(["dashboard", "--host", "0.0.0.0"])
+
+    assert exit_code == 2
+    assert "--allow-remote" in capsys.readouterr().err
 
 
 def test_dashboard_command_reports_missing_dist(monkeypatch, capsys):
@@ -281,6 +297,42 @@ models = [{ provider = "p1", model = "sonnet-first" }]
     uvicorn_kwargs = cast(dict[str, Any], seen["uvicorn"])
     assert uvicorn_kwargs["host"] == "127.0.0.1"
     assert "api_key 未解析" in capsys.readouterr().err
+
+
+def test_serve_refuses_remote_bind_without_opt_in(monkeypatch, tmp_path, capsys):
+    config = tmp_path / "config.toml"
+    _write_config(config)
+    monkeypatch.setattr(
+        cli.uvicorn,
+        "run",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("不应启动 uvicorn")
+        ),
+    )
+
+    exit_code = cli.run(
+        [
+            "serve",
+            "--config",
+            str(config),
+            "--host",
+            "0.0.0.0",
+            "--no-env-file",
+            "--db",
+            str(tmp_path / "calls.db"),
+        ]
+    )
+
+    assert exit_code == 2
+    assert "--allow-remote" in capsys.readouterr().err
+
+
+def test_loopback_bind_detection_accepts_ipv4_ipv6_and_localhost(capsys):
+    assert cli._allow_bind("127.0.0.1", False)
+    assert cli._allow_bind("::1", False)
+    assert cli._allow_bind("[::1]", False)
+    assert cli._allow_bind("localhost", False)
+    assert capsys.readouterr().err == ""
 
 
 def test_models_lists_routes_in_priority_order(tmp_path, capsys):

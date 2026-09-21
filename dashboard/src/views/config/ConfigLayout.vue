@@ -43,9 +43,14 @@ onBeforeUnmount(() => {
 
 async function save() {
   try {
-    await store.save();
-    await app.loadConfig(true);
-    toast.success("已保存");
+    const editorConfigOk = await store.save();
+    const appConfigOk = await app.loadConfig(true);
+    if (editorConfigOk && appConfigOk) {
+      toast.success("已保存");
+    } else {
+      app.staleData = true;
+      toast.push("配置已保存，但重新加载失败，数据可能过期", "info");
+    }
   } catch (err) {
     toast.error(err instanceof Error ? err.message : "保存失败");
   }
@@ -63,8 +68,12 @@ async function reload() {
   }
   try {
     await store.load();
-    await app.loadConfig(true);
-    toast.success("已刷新");
+    if (await app.loadConfig(true)) {
+      toast.success("已刷新");
+    } else {
+      app.staleData = true;
+      toast.push("编辑器已刷新，但全局配置同步失败，数据可能过期", "info");
+    }
   } catch (err) {
     toast.error(err instanceof Error ? err.message : "刷新失败");
   }
@@ -102,8 +111,8 @@ useAutoRefresh(async () => {
     </header>
 
     <div v-if="error" class="error-state panel">{{ error }}</div>
-    <div v-else-if="loading && !store.draft" class="empty-state panel">加载配置…</div>
-    <template v-else>
+    <div v-if="loading && !store.draft" class="empty-state panel">加载配置…</div>
+    <template v-else-if="store.draft">
       <nav class="subnav">
         <RouterLink
           v-for="l in links"
@@ -173,14 +182,19 @@ useAutoRefresh(async () => {
   border-color: transparent;
   color: var(--accent);
 }
-@media (max-width: 680px) {
+@media (max-width: 860px) {
+  .page {
+    padding-bottom: 4.5rem;
+  }
+
   .page-head {
     padding-right: 0;
-    padding-top: 3.75rem;
   }
+
   .floating-actions {
-    top: calc(var(--header-height) + 0.5rem);
+    top: auto;
     right: 0.75rem;
+    bottom: 0.75rem;
   }
 }
 </style>

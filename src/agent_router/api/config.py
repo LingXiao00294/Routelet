@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import tomllib
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -157,14 +159,89 @@ def _serialize_toml(data: dict[str, Any]) -> str:
 
 
 def _replace_file(path: Path, content: bytes) -> None:
-    """通过同目录临时文件原子替换配置，并保证不遗留临时文件。"""
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
+    """Atomically replace a file through a unique sibling temporary file."""
+    tmp_path: Path | None = None
     try:
-        # 调用方传入显式 UTF-8 编码后的字节，避免受 Windows 默认编码影响。
-        tmp_path.write_bytes(content)
+        # 唯一同目录文件同时满足 os.replace 的原子性，并避免多个进程或测试实例
+        # 共用固定 ``config.toml.tmp`` 时互相覆盖。
+        with NamedTemporaryFile(
+            mode="wb",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp_file:
+            tmp_path = Path(tmp_file.name)
+            tmp_file.write(content)
         tmp_path.replace(path)
     finally:
-        tmp_path.unlink(missing_ok=True)
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
+async def _update_config_transaction(
+    config_path: str,
+    body: dict[str, Any],
+    reload_config_fn: Callable[[AppConfig], Awaitable[None]] | None,
+) -> dict[str, str] | JSONResponse:
+    """Validate, persist, and reload one configuration transaction.
+
+    The caller must serialize invocations that share ``config_path`` so the
+    runtime reload and any rollback remain ordered with the corresponding disk
+    replacement.
+
+    Args:
+        config_path: Configuration file updated by this transaction.
+        body: Candidate API payload, possibly containing masked key values.
+        reload_config_fn: Optional callback that applies the validated runtime.
+
+    Returns:
+        A success payload, or a fixed conflict response for referenced deletes.
+
+    Raises:
+        HTTPException: If validation, persistence, reload, or rollback fails.
+    """
+    path = Path(config_path)
+    existing = _read_config_raw(config_path)
+    original_bytes = path.read_bytes()
+
+    try:
+        candidate = _merge_and_preserve_keys(body, existing)
+        conflict = _deletion_conflict(existing, candidate)
+        if conflict is not None:
+            return JSONResponse(status_code=409, content={"error": conflict})
+        content = _serialize_toml(candidate)
+        round_trip = tomllib.loads(content)
+        runtime_config = parse_config_data(round_trip, allow_unresolved_api_keys=True)
+    except ConfigError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except (TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise HTTPException(400, f"配置序列化失败: {exc}") from exc
+
+    try:
+        _replace_file(path, content.encode("utf-8"))
+    except OSError as exc:
+        raise HTTPException(500, f"写入配置失败，旧配置保持不变: {exc}") from exc
+
+    if reload_config_fn is not None:
+        try:
+            await reload_config_fn(runtime_config)
+        except Exception as exc:
+            try:
+                _replace_file(path, original_bytes)
+            except OSError as rollback_exc:
+                raise HTTPException(
+                    500,
+                    "运行时切换失败，且配置文件回滚失败: "
+                    f"{exc}; rollback: {rollback_exc}",
+                ) from exc
+            if isinstance(exc, RuntimeReloadError):
+                detail = f"运行时切换失败，配置文件已回滚，但运行时回滚失败: {exc}"
+            else:
+                detail = f"运行时切换失败，配置文件与运行时已回滚: {exc}"
+            raise HTTPException(500, detail) from exc
+
+    return {"status": "ok", "message": "配置已更新并热重载"}
 
 
 def _references_by_identity(
@@ -302,68 +379,35 @@ def create_config_router(
 ) -> APIRouter:
     """创建配置读取与原子更新 API。"""
     router = APIRouter(tags=["config"])
+    update_lock = asyncio.Lock()
 
     @router.get("/api/config")
     async def get_config():
         """返回完整规范配置，并对 api_key 脱敏。"""
-        return _read_safe_config(config_path)
+        async with update_lock:
+            return _read_safe_config(config_path)
 
     @router.get("/api/config/providers")
     async def list_providers():
         """返回包含实际模型目录的 Provider 配置，并对 api_key 脱敏。"""
-        raw = _read_safe_config(config_path)
-        return raw.get("providers", {})
+        async with update_lock:
+            raw = _read_safe_config(config_path)
+            return raw.get("providers", {})
 
     @router.get("/api/config/models")
     async def list_models():
         """返回有序 ModelRef 与单一结构化 pinned_model。"""
-        return _read_config_raw(config_path).get("models", {})
+        async with update_lock:
+            return _read_config_raw(config_path).get("models", {})
 
     @router.put("/api/config")
     async def update_config(body: dict[str, Any]):
-        """校验候选配置，原子写回 TOML，并以失败回滚保证状态一致。"""
-        path = Path(config_path)
-        existing = _read_config_raw(config_path)
-        original_bytes = path.read_bytes()
-
-        try:
-            candidate = _merge_and_preserve_keys(body, existing)
-            conflict = _deletion_conflict(existing, candidate)
-            if conflict is not None:
-                return JSONResponse(status_code=409, content={"error": conflict})
-            content = _serialize_toml(candidate)
-            round_trip = tomllib.loads(content)
-            runtime_config = parse_config_data(
-                round_trip, allow_unresolved_api_keys=True
+        """Serialize config writes so disk, runtime, and rollback stay ordered."""
+        async with update_lock:
+            return await _update_config_transaction(
+                config_path,
+                body,
+                reload_config_fn,
             )
-        except ConfigError as exc:
-            raise HTTPException(400, str(exc)) from exc
-        except (TypeError, ValueError, tomllib.TOMLDecodeError) as exc:
-            raise HTTPException(400, f"配置序列化失败: {exc}") from exc
-
-        try:
-            _replace_file(path, content.encode("utf-8"))
-        except OSError as exc:
-            raise HTTPException(500, f"写入配置失败，旧配置保持不变: {exc}") from exc
-
-        if reload_config_fn is not None:
-            try:
-                await reload_config_fn(runtime_config)
-            except Exception as exc:
-                try:
-                    _replace_file(path, original_bytes)
-                except OSError as rollback_exc:
-                    raise HTTPException(
-                        500,
-                        "运行时切换失败，且配置文件回滚失败: "
-                        f"{exc}; rollback: {rollback_exc}",
-                    ) from exc
-                if isinstance(exc, RuntimeReloadError):
-                    detail = f"运行时切换失败，配置文件已回滚，但运行时回滚失败: {exc}"
-                else:
-                    detail = f"运行时切换失败，配置文件与运行时已回滚: {exc}"
-                raise HTTPException(500, detail) from exc
-
-        return {"status": "ok", "message": "配置已更新并热重载"}
 
     return router

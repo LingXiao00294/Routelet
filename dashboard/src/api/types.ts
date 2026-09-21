@@ -9,7 +9,7 @@ export interface Summary {
   total_output_tokens: number;
   total_cache_read: number;
   total_cache_write: number;
-  total_cost_usd: number;
+  total_cost_usd: number | null;
   avg_latency_ms: number;
 }
 
@@ -56,36 +56,42 @@ export interface FailoverEntry {
   latency_ms?: number;
 }
 
-export interface CallRecord {
+export interface CallSummary {
   id: string;
   timestamp: string;
   virtual_model: string;
   provider_name: string | null;
-  provider_type: string | null;
   provider_model: string | null;
-  provider_url: string | null;
   attempt: number;
   latency_ms: number | null;
-  request_body: string | null;
-  request_tokens: number | null;
   status: string;
-  error_type: string | null;
-  error_message: string | null;
-  response_body: string | null;
   input_tokens: number | null;
   output_tokens: number | null;
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
+  cost_usd: number | null;
+}
+
+export interface CallDetail extends CallSummary {
+  provider_type: string | null;
+  provider_url: string | null;
+  request_body: string | null;
+  request_tokens: number | null;
+  error_type: string | null;
+  error_message: string | null;
+  response_body: string | null;
   input_price_per_million: number | null;
   output_price_per_million: number | null;
   cache_read_price_per_million: number | null;
   cache_write_price_per_million: number | null;
-  cost_usd: number | null;
   failover_details: string | null;
 }
 
+/** Compatibility name for components that consume a complete call detail. */
+export type CallRecord = CallDetail;
+
 export interface CallsPage {
-  data: CallRecord[];
+  data: CallSummary[];
   total: number;
   page: number;
   size: number;
@@ -93,7 +99,7 @@ export interface CallsPage {
 }
 
 export type RouterMode = "failover" | "sticky";
-export type ProviderType = "anthropic" | "openai";
+export type ProviderType = "anthropic";
 export type LogLevel = "debug" | "info" | "warning" | "error";
 export type CircuitState = "closed" | "open" | "half_open";
 

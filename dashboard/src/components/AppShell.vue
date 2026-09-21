@@ -53,8 +53,12 @@ async function onFailoverChange(e: Event) {
   const next = input.checked ? "failover" : "sticky";
   pendingMode.value = next;
   try {
-    await app.setMode(next);
-    toast.success(input.checked ? "故障转移已开启" : "已切换到指定模型模式");
+    const refreshed = await app.setMode(next);
+    if (refreshed) {
+      toast.success(input.checked ? "故障转移已开启" : "已切换到指定模型模式");
+    } else {
+      toast.push("模式已切换，但重新加载失败，数据可能过期", "info");
+    }
   } catch (err) {
     pendingMode.value = null;
     input.checked = failoverEnabled.value;
@@ -318,6 +322,7 @@ function onInterval(e: Event) {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  white-space: nowrap;
   font-size: 0.85rem;
   font-weight: 600;
   color: var(--text-muted);
@@ -385,6 +390,18 @@ function onInterval(e: Event) {
   .nav {
     flex-direction: row;
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 520px) {
+  .top {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+
+  .top-actions {
+    justify-content: flex-start;
   }
 }
 </style>

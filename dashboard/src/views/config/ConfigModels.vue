@@ -1,10 +1,14 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import type { ModelRef } from "@/api/types";
 import { useConfigStore } from "@/stores/config";
 import { useConfirm } from "@/composables/useConfirm";
 import { formatActualModel } from "@/utils/format";
+import {
+  adjacentMoveTarget,
+  type MoveDirection,
+} from "@/utils/modelOrdering";
 
 const store = useConfigStore();
 const confirm = useConfirm();
@@ -59,8 +63,11 @@ const draggingRef = ref<{
 } | null>(null);
 const dropTarget = ref<{ model: string; index: number } | null>(null);
 const dragPreview = ref<HTMLElement | null>(null);
+const moveAnnouncement = ref("");
+const recentlyMoved = ref<{ model: string; key: number } | null>(null);
 const refKeys = new WeakMap<ModelRef, number>();
 let nextRefKey = 0;
+let moveFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
 const DRAG_START_DISTANCE = 6;
 const dragPreviewRow = computed(() => {
   const source = draggingRef.value;
@@ -72,6 +79,10 @@ watch(
   () => store.ensureStickyPins(),
   { deep: true, immediate: true },
 );
+
+onBeforeUnmount(() => {
+  if (moveFeedbackTimer) clearTimeout(moveFeedbackTimer);
+});
 
 function add() {
   store.addModel(newName.value.trim());
@@ -217,6 +228,41 @@ function flipFromSnapshot(model: string, prev: Map<HTMLElement, number>) {
   }
 }
 
+function moveModelRef(model: string, from: number, to: number) {
+  const row = models.value[model]?.models[from];
+  if (!row || from === to) return;
+  if (to < 0 || to >= models.value[model].models.length) return;
+
+  const snapshot = snapshotModelRows(model);
+  const key = refKey(row);
+  store.moveRef(model, from, to);
+  recentlyMoved.value = { model, key };
+  moveAnnouncement.value = `${formatActualModel(row.provider, row.model)} 已移至第 ${to + 1} 位`;
+  if (moveFeedbackTimer) clearTimeout(moveFeedbackTimer);
+  moveFeedbackTimer = setTimeout(() => {
+    if (recentlyMoved.value?.model === model && recentlyMoved.value.key === key) {
+      recentlyMoved.value = null;
+      moveAnnouncement.value = "";
+    }
+    moveFeedbackTimer = null;
+  }, 1_400);
+  void nextTick(() => flipFromSnapshot(model, snapshot));
+}
+
+function moveBy(model: string, index: number, direction: MoveDirection) {
+  const length = models.value[model]?.models.length ?? 0;
+  const target = adjacentMoveTarget(length, index, direction);
+  if (target != null) moveModelRef(model, index, target);
+}
+
+function canMove(length: number, index: number, direction: MoveDirection): boolean {
+  return adjacentMoveTarget(length, index, direction) != null;
+}
+
+function isRecentlyMoved(model: string, row: ModelRef): boolean {
+  return recentlyMoved.value?.model === model && recentlyMoved.value.key === refKey(row);
+}
+
 function moveDragPreview(clientX: number, clientY: number) {
   const source = draggingRef.value;
   const preview = dragPreview.value;
@@ -277,10 +323,7 @@ function finishPointerDrag(event: PointerEvent) {
     const insertAt = target.index;
     const destination = source.index < insertAt ? insertAt - 1 : insertAt;
     if (destination !== source.index) {
-      // Snapshot before mutating so FLIP can animate every row into place.
-      const snapshot = snapshotModelRows(source.model);
-      store.moveRef(source.model, source.index, destination);
-      void nextTick(() => flipFromSnapshot(source.model, snapshot));
+      moveModelRef(source.model, source.index, destination);
     }
   }
   clearDragState();
@@ -336,6 +379,9 @@ function isPinned(model: string, idx: number) {
 
 <template>
   <section v-if="draft" class="wrap">
+    <p class="sr-only" aria-live="polite" aria-atomic="true">
+      {{ moveAnnouncement }}
+    </p>
     <div class="toolbar panel">
       <div class="field grow">
         <label>新建虚拟模型</label>
@@ -350,7 +396,7 @@ function isPinned(model: string, idx: number) {
         <div>
           <h3 class="mono">{{ name }}</h3>
           <p class="muted tiny">
-            拖动左侧手柄调整模型链顺序
+            拖动左侧手柄或使用上下移按钮调整模型链顺序
             <template v-if="failoverEnabled"> · 失败时按顺序尝试</template>
             <template v-else> · 仅调用 Pin 指定的模型</template>
           </p>
@@ -374,14 +420,14 @@ function isPinned(model: string, idx: number) {
         title="拖动调整优先级"
         :class="{
           'is-dragging': isDragging(name, idx),
+          'just-moved': isRecentlyMoved(name, row),
           'drop-before': isDropTarget(name, idx, 'before'),
           'drop-after': isDropTarget(name, idx, 'after'),
         }"
       >
-        <button
+        <span
           class="drag-handle"
-          type="button"
-          aria-label="拖动调整优先级"
+          aria-hidden="true"
           title="拖动调整优先级"
           @pointerdown="startPointerDrag($event, name, idx)"
           @pointermove="movePointerDrag"
@@ -390,7 +436,7 @@ function isPinned(model: string, idx: number) {
           @lostpointercapture="clearDragState"
         >
           ⠿
-        </button>
+        </span>
         <span class="prio mono">#{{ idx + 1 }}</span>
         <label
           class="model-picker"
@@ -422,6 +468,26 @@ function isPinned(model: string, idx: number) {
         </label>
         <div class="ref-actions">
           <button
+            class="btn btn-sm move-btn"
+            type="button"
+            :disabled="!canMove(m.models.length, idx, -1)"
+            :aria-label="`将 ${formatActualModel(row.provider, row.model)} 上移一位`"
+            title="上移一位"
+            @click="moveBy(name, idx, -1)"
+          >
+            ↑
+          </button>
+          <button
+            class="btn btn-sm move-btn"
+            type="button"
+            :disabled="!canMove(m.models.length, idx, 1)"
+            :aria-label="`将 ${formatActualModel(row.provider, row.model)} 下移一位`"
+            title="下移一位"
+            @click="moveBy(name, idx, 1)"
+          >
+            ↓
+          </button>
+          <button
             class="btn btn-sm"
             type="button"
             :class="{ 'btn-primary': isPinned(name, idx) }"
@@ -430,7 +496,15 @@ function isPinned(model: string, idx: number) {
           >
             Pin
           </button>
-          <button class="btn btn-sm btn-danger" type="button" @click="removeRef(name, idx)">×</button>
+          <button
+            class="btn btn-sm btn-danger move-btn"
+            type="button"
+            :aria-label="`从 ${name} 删除 ${formatActualModel(row.provider, row.model)}`"
+            title="删除实际模型"
+            @click="removeRef(name, idx)"
+          >
+            ×
+          </button>
         </div>
         <p v-if="fieldErrors[`models.${name}.ref.${idx}`]" class="err ref-err">
           {{ fieldErrors[`models.${name}.ref.${idx}`] }}
@@ -465,12 +539,14 @@ function isPinned(model: string, idx: number) {
       :style="dragPreviewStyle()"
       aria-hidden="true"
     >
-      <button class="drag-handle" type="button" disabled>⠿</button>
+      <span class="drag-handle">⠿</span>
       <span class="prio mono">#{{ draggingRef.index + 1 }}</span>
       <span class="model-picker model-picker-disabled mono">
         {{ formatActualModel(dragPreviewRow.provider, dragPreviewRow.model) }}
       </span>
       <div class="ref-actions">
+        <button class="btn btn-sm move-btn" type="button" disabled>↑</button>
+        <button class="btn btn-sm move-btn" type="button" disabled>↓</button>
         <button
           class="btn btn-sm"
           type="button"
@@ -479,7 +555,7 @@ function isPinned(model: string, idx: number) {
         >
           Pin
         </button>
-        <button class="btn btn-sm btn-danger" type="button" disabled>×</button>
+        <button class="btn btn-sm btn-danger move-btn" type="button" disabled>×</button>
       </div>
     </div>
   </Teleport>
@@ -532,6 +608,11 @@ function isPinned(model: string, idx: number) {
     transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .drag-handle {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
   border: 0;
   padding: 0.3rem 0.15rem;
   color: var(--text-muted);
@@ -540,12 +621,16 @@ function isPinned(model: string, idx: number) {
   font-size: 1.2rem;
   line-height: 1;
   touch-action: none;
+  user-select: none;
 }
 .drag-handle:active { cursor: grabbing; }
-.drag-handle:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .ref-row.is-dragging {
   opacity: 0.35;
   border-style: dashed;
+}
+.ref-row.just-moved {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .drag-preview {
   position: fixed;
@@ -630,6 +715,11 @@ function isPinned(model: string, idx: number) {
 }
 .prio { color: var(--text-muted); font-size: 0.8rem; }
 .ref-actions { display: flex; gap: 0.25rem; }
+.move-btn {
+  width: 28px;
+  min-width: 28px;
+  padding-inline: 0;
+}
 .card-foot {
   display: flex;
   flex-wrap: wrap;

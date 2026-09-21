@@ -19,21 +19,28 @@ interface ConfirmApi {
 
 const KEY: InjectionKey<ConfirmApi> = Symbol("confirm");
 
-export function provideConfirm(): ConfirmApi {
+export function createConfirmController(): ConfirmApi {
   const state = ref<ConfirmState | null>(null);
 
   function answer(ok: boolean) {
-    state.value?.resolve(ok);
+    const current = state.value;
+    if (!current) return;
     state.value = null;
+    current.resolve(ok);
   }
 
   function confirm(opts: ConfirmOptions): Promise<boolean> {
+    answer(false);
     return new Promise((resolve) => {
       state.value = { ...opts, resolve };
     });
   }
 
-  const api: ConfirmApi = { state, confirm, answer };
+  return { state, confirm, answer };
+}
+
+export function provideConfirm(): ConfirmApi {
+  const api = createConfirmController();
   provide(KEY, api);
   return api;
 }

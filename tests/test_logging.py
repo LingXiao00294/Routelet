@@ -96,6 +96,32 @@ def test_sensitive_data_redacted_in_file(tmp_path):
     assert data["nested"]["safe"] == 1
 
 
+def test_exception_tracebacks_never_render_local_secrets(tmp_path, capsys):
+    """Keep provider credentials out of stdout and JSON exception traces."""
+    log_file = tmp_path / "app.log"
+    monitoring.setup_logging("info", log_file=str(log_file))
+    secret = "traceback-secret-provider-key"
+
+    def fail_with_headers(value: str) -> None:
+        headers = {"Authorization": f"Bearer {value}"}
+        if headers:
+            raise RuntimeError("upstream rejected request")
+
+    try:
+        fail_with_headers(secret)
+    except RuntimeError:
+        structlog.get_logger("t").error("provider.failed", exc_info=True)
+
+    stdout = capsys.readouterr().out
+    _flush()
+    file_output = log_file.read_text(encoding="utf-8")
+
+    assert "provider.failed" in stdout
+    assert "RuntimeError: upstream rejected request" in stdout
+    assert secret not in stdout
+    assert secret not in file_output
+
+
 def test_sensitive_data_redacted_in_lists_and_compound_keys(tmp_path):
     """覆盖 _scrub 列表分支，以及 access_token / client_secret 等复合敏感键名。
 

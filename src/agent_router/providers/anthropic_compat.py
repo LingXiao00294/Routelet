@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from email.utils import parsedate_to_datetime
+from math import isfinite
 from time import time
+from typing import Final
 
 import httpx
 from structlog import get_logger
@@ -12,32 +14,38 @@ from agent_router.providers.base import BaseProvider, NonRetryableError, Retryab
 logger = get_logger(__name__)
 
 RATE_LIMIT_STATUSES: set[int] = {429, 529}
-RETRYABLE_STATUSES: set[int] = {429, 500, 502, 503, 504, 529}
 AUTH_STATUSES: set[int] = {401, 403}
 RETRYABLE_EXCEPTIONS = (
-    httpx.ConnectError,
-    httpx.ConnectTimeout,
-    httpx.ReadTimeout,
+    httpx.TimeoutException,
+    httpx.NetworkError,
     httpx.RemoteProtocolError,
-    httpx.PoolTimeout,
 )
+MAX_RETRY_AFTER_SECONDS = 86_400.0
+FORWARDED_ANTHROPIC_HEADERS_KEY: Final = "_agent_router_anthropic_headers"
+DEFAULT_ANTHROPIC_VERSION: Final = "2023-06-01"
 
 
 def parse_retry_after(value: str | None) -> float | None:
-    """Parse Retry-After header (delay-seconds or HTTP-date) to seconds."""
+    """Parse and bound a Retry-After delay to at most 24 hours.
+
+    Return ``None`` for missing, malformed, negative, or non-finite values so
+    the configured provider cooldown remains the safe fallback.
+    """
     if not value:
         return None
     value = value.strip()
     try:
         seconds = float(value)
-        if seconds >= 0:
-            return seconds
+        if isfinite(seconds) and seconds >= 0:
+            return min(seconds, MAX_RETRY_AFTER_SECONDS)
     except ValueError:
         pass
     try:
         dt = parsedate_to_datetime(value)
         delay = dt.timestamp() - time()
-        return max(0.0, delay)
+        if not isfinite(delay):
+            return None
+        return min(max(0.0, delay), MAX_RETRY_AFTER_SECONDS)
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -57,9 +65,12 @@ def _classify_error(e: httpx.HTTPStatusError) -> Exception:
             rate_limited=True,
             retry_after=retry_after,
         )
-    if status in RETRYABLE_STATUSES:
+    if 500 <= status < 600:
         return RetryableError(f"HTTP {status}: {body}")
-    return NonRetryableError(f"HTTP {status}: {body}")
+    return NonRetryableError(
+        f"HTTP {status}: {body}",
+        status_code=status if 400 <= status < 500 else None,
+    )
 
 
 def _classify_exception(e: Exception) -> Exception:
@@ -97,7 +108,8 @@ class AnthropicCompatProvider(BaseProvider):
         except Exception as e:
             raise NonRetryableError("响应不是有效的 JSON") from e
 
-    async def send_stream(self, request_body: dict) -> AsyncIterator[bytes]:
+    async def send_stream(self, request_body: dict) -> AsyncGenerator[bytes, None]:
+        """Yield upstream SSE bytes and close the HTTP response when finalized."""
         url = f"{self.config.base_url}/v1/messages"
         headers = self._build_headers(request_body)
         headers["Accept-Encoding"] = "identity"
@@ -124,11 +136,27 @@ class AnthropicCompatProvider(BaseProvider):
         except Exception as e:
             raise _classify_exception(e) from e
 
-    def _build_headers(self, request_body: dict) -> dict:
+    def _build_headers(self, request_body: dict) -> dict[str, str]:
+        """Build authenticated upstream headers from trusted router metadata."""
+        forwarded = request_body.get(FORWARDED_ANTHROPIC_HEADERS_KEY)
+        version = request_body.get("anthropic_version", DEFAULT_ANTHROPIC_VERSION)
+        if not isinstance(version, str) or not version:
+            version = DEFAULT_ANTHROPIC_VERSION
+        beta: str | None = None
+        if isinstance(forwarded, dict):
+            forwarded_version = forwarded.get("anthropic-version")
+            if isinstance(forwarded_version, str) and forwarded_version:
+                version = forwarded_version
+            forwarded_beta = forwarded.get("anthropic-beta")
+            if isinstance(forwarded_beta, str) and forwarded_beta:
+                beta = forwarded_beta
+
         headers = {
             "Content-Type": "application/json",
-            "anthropic-version": request_body.get("anthropic_version", "2023-06-01"),
+            "anthropic-version": version,
         }
+        if beta is not None:
+            headers["anthropic-beta"] = beta
         # 尝试多种认证 header 格式
         if self.config.api_key.startswith("sk-ant"):
             headers["x-api-key"] = self.config.api_key
@@ -137,6 +165,10 @@ class AnthropicCompatProvider(BaseProvider):
         return headers
 
     def _prepare_body(self, request_body: dict) -> dict:
+        """Replace the virtual model and remove router-only metadata."""
         body = {**request_body}
+        body.pop(FORWARDED_ANTHROPIC_HEADERS_KEY, None)
+        # 兼容旧的 body 内版本提示，但不把非标准字段发送给上游。
+        body.pop("anthropic_version", None)
         body["model"] = self.config.model
         return body

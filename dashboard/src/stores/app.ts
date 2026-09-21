@@ -18,6 +18,9 @@ export const useAppStore = defineStore("app", () => {
   const circuit = ref<CircuitBreakerMap>({});
   const savingMode = ref(false);
   const staleData = ref(false);
+  let healthSeq = 0;
+  let configSeq = 0;
+  let circuitSeq = 0;
 
   const mode = computed(() => config.value?.router.mode ?? "sticky");
 
@@ -35,52 +38,93 @@ export const useAppStore = defineStore("app", () => {
   }
 
   async function checkHealth() {
+    const seq = ++healthSeq;
     try {
       const res = await api.getHealth();
+      if (seq !== healthSeq) return;
       healthy.value = res.status === "ok";
       healthError.value = null;
     } catch (err) {
+      if (seq !== healthSeq) return;
       healthy.value = false;
       healthError.value = err instanceof Error ? err.message : "unreachable";
     }
   }
 
   async function loadConfig(silent = false) {
+    const seq = ++configSeq;
     if (!silent) configLoading.value = true;
     configError.value = null;
     try {
-      config.value = normalizeAppConfig(await api.getConfig());
+      const result = normalizeAppConfig(await api.getConfig());
+      if (seq !== configSeq) return true;
+      config.value = result;
+      return true;
     } catch (err) {
+      if (seq !== configSeq) return true;
       configError.value = err instanceof Error ? err.message : "加载配置失败";
       if (!silent) throw err;
+      return false;
     } finally {
-      configLoading.value = false;
+      if (seq === configSeq) configLoading.value = false;
     }
   }
 
   async function loadCircuit(silent = false) {
+    const seq = ++circuitSeq;
     try {
-      circuit.value = await api.getCircuitBreaker();
+      const result = await api.getCircuitBreaker();
+      if (seq !== circuitSeq) return true;
+      circuit.value = result;
+      return true;
     } catch (err) {
+      if (seq !== circuitSeq) return true;
       if (!silent) throw err;
+      return false;
     }
   }
 
+  /** Load all startup state without leaking a rejected task to the browser. */
+  async function loadInitialState(): Promise<boolean> {
+    const results = await Promise.allSettled([
+      checkHealth(),
+      loadConfig(),
+      loadCircuit(),
+    ]);
+    const failed =
+      healthy.value === false || results.some((result) => result.status === "rejected");
+    staleData.value = failed;
+    return failed;
+  }
+
   /** Immediate mode PUT via config store sanitize path; syncs app.config after. */
-  async function setMode(next: RouterMode) {
-    if (savingMode.value) return;
+  async function setMode(next: RouterMode): Promise<boolean> {
+    if (savingMode.value) {
+      throw new Error("模式正在切换，请稍候");
+    }
     const configStore = useConfigStore();
     if (configStore.dirty) {
       throw new Error("配置页有未保存更改，请先保存或刷新后再切换故障转移");
     }
     const prev = config.value?.router.mode;
-    if (prev === next) return;
+    if (prev === next) return true;
     savingMode.value = true;
+    let persisted = false;
     try {
-      await configStore.setRouterMode(next);
-      await loadConfig(true);
+      const editorConfigOk = await configStore.setRouterMode(next);
+      persisted = true;
+      if (config.value) {
+        config.value = {
+          ...config.value,
+          router: { ...config.value.router, mode: next },
+        };
+      }
+      const appConfigOk = await loadConfig(true);
+      const refreshed = editorConfigOk && appConfigOk;
+      if (!refreshed) staleData.value = true;
+      return refreshed;
     } catch (err) {
-      if (config.value && prev) {
+      if (!persisted && config.value && prev) {
         config.value = {
           ...config.value,
           router: { ...config.value.router, mode: prev },
@@ -114,6 +158,7 @@ export const useAppStore = defineStore("app", () => {
     checkHealth,
     loadConfig,
     loadCircuit,
+    loadInitialState,
     setMode,
   };
 });

@@ -1,16 +1,16 @@
 from __future__ import annotations
 
 import json
-import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Literal
 
 import structlog
 from structlog.contextvars import get_contextvars
 
-from agent_router.circuit_breaker import CircuitBreaker
+from agent_router.circuit_breaker import CircuitBreaker, CircuitPermit, CircuitState
 from agent_router.config import (
     AppConfig,
     ProviderConfig,
@@ -24,13 +24,9 @@ from agent_router.provider_gate import (
 )
 from agent_router.providers.anthropic_compat import AnthropicCompatProvider
 from agent_router.providers.base import BaseProvider, NonRetryableError, RetryableError
+from agent_router.sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
-
-# SSE error event pattern: event: error followed by data: {...}
-_SSE_ERROR_EVENT_RE = re.compile(
-    rb"event:\s*error\s*\r?\ndata:\s*(\{.*?\})\s*(?:\r?\n|$)", re.DOTALL
-)
 
 _RATE_LIMIT_ERROR_TYPES = {
     "rate_limit_error",
@@ -53,21 +49,43 @@ _AUTH_ERROR_TYPES = {
 }
 
 
+class _RoutingConfigChanged(Exception):
+    """Signal that a not-yet-started attempt must use a newer config snapshot."""
+
+
 def _check_stream_error(buffer: bytes) -> None:
     """Check SSE buffer for error events and raise appropriate exception.
 
     This detects errors in streaming responses that return HTTP 200 but
     contain error events in the stream (like rate limit exceeded).
     """
-    m = _SSE_ERROR_EVENT_RE.search(buffer)
-    if not m:
+    decoder = SSEDecoder()
+    try:
+        events = decoder.feed(buffer)
+    except SSEDecodeError as exc:
+        raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
+    for event in events:
+        _raise_for_stream_error(event)
+
+
+def _raise_for_stream_error(event: SSEEvent) -> None:
+    """Raise the routing error represented by a decoded SSE error event."""
+    if event.event != "error":
         return
 
     try:
-        data = json.loads(m.group(1))
+        data = json.loads(event.data)
+        if not isinstance(data, dict):
+            raise TypeError("error event data must be an object")
         error = data.get("error", {})
+        if not isinstance(error, dict):
+            raise TypeError("error field must be an object")
         error_type = error.get("type", "")
         error_message = error.get("message", "Unknown stream error")
+        if not isinstance(error_type, str):
+            raise TypeError("error type must be a string")
+        if not isinstance(error_message, str):
+            error_message = str(error_message)
 
         if error_type in _AUTH_ERROR_TYPES:
             raise RetryableError(
@@ -83,19 +101,15 @@ def _check_stream_error(buffer: bytes) -> None:
             raise RetryableError(f"Stream error ({error_type}): {error_message}")
         # Unknown error types are non-retryable (don't blindly failover)
         raise NonRetryableError(f"Stream error ({error_type}): {error_message}")
-    except (json.JSONDecodeError, KeyError, TypeError):
+    except (json.JSONDecodeError, UnicodeDecodeError, KeyError, TypeError):
         # Malformed error event — non-retryable since we can't identify the type
         raise NonRetryableError(
-            f"Stream error: {m.group(1).decode(errors='replace')[:500]}"
+            f"Stream error: {event.data.decode(errors='replace')[:500]}"
         ) from None
 
 
 def _create_provider(config: ProviderConfig, http_client) -> BaseProvider:
-    if config.type == "anthropic":
-        return AnthropicCompatProvider(config, http_client)
-    if config.type == "openai":
-        raise NotImplementedError("OpenAI provider 尚未实现")
-    raise ValueError(f"未知 provider 类型: {config.type}")
+    return AnthropicCompatProvider(config, http_client)
 
 
 def _max_retry_after(errors: list[dict]) -> float | None:
@@ -110,6 +124,7 @@ def _max_retry_after(errors: list[dict]) -> float | None:
 class Router:
     def __init__(self, config: AppConfig, http_client) -> None:
         self.config = config
+        self._config_generation = 0
         self.http = http_client
         self.circuit_breaker = CircuitBreaker(
             failure_threshold=config.router.failure_threshold,
@@ -128,6 +143,40 @@ class Router:
         self.circuit_breaker.failure_threshold = config.router.failure_threshold
         self.circuit_breaker.recovery_timeout = config.router.recovery_timeout
         self.config = config
+        self._config_generation += 1
+
+    def _ensure_config_generation(self, generation: int) -> None:
+        """Reject an attempt whose Provider snapshot predates a hot reload."""
+        if generation != self._config_generation:
+            raise _RoutingConfigChanged
+
+    async def _get_providers_for_generation(
+        self, virtual_model: str, generation: int, outcome: dict
+    ) -> list[ProviderConfig]:
+        """Return candidates only when routing configuration stayed unchanged.
+
+        Raises:
+            _RoutingConfigChanged: If hot reload overlaps candidate discovery,
+                including an error produced from the obsolete configuration.
+        """
+        try:
+            providers = await self._get_providers(virtual_model)
+        except UnknownModelError:
+            self._ensure_config_generation(generation)
+            raise
+        except (AllProvidersFailedError, NoProviderAvailableError) as exc:
+            self._ensure_config_generation(generation)
+            outcome.setdefault("_failures", []).extend(
+                {
+                    "provider": error["provider"],
+                    "model": error["model"],
+                    "error": error["error"],
+                }
+                for error in exc.errors
+            )
+            raise
+        self._ensure_config_generation(generation)
+        return providers
 
     def _virtual_model(self, name: str) -> VirtualModelConfig:
         if name not in self.config.models:
@@ -145,6 +194,7 @@ class Router:
         providers: list[ProviderConfig],
         i: int,
         *,
+        permit: CircuitPermit | None,
         allow_failover: bool,
     ) -> None:
         """Shared error handling for both route methods.
@@ -169,6 +219,7 @@ class Router:
                 provider_cfg.name,
                 immediate=e.immediate_break,
                 failure_threshold=provider_cfg.failure_threshold,
+                permit=permit,
             )
 
         err_entry: dict = {
@@ -184,7 +235,7 @@ class Router:
             err_entry["retry_after"] = retry_after
         errors.append(err_entry)
 
-        if is_retryable and outcome is not None:
+        if outcome is not None:
             outcome.setdefault("_failures", []).append(
                 {
                     "provider": provider_cfg.name,
@@ -301,17 +352,109 @@ class Router:
                 reason=kind,
             )
 
+    async def _record_circuit_skip(
+        self,
+        provider_cfg: ProviderConfig,
+        request_id: str,
+        p_start: float,
+        errors: list[dict],
+        outcome: dict | None,
+        providers: list[ProviderConfig],
+        i: int,
+        *,
+        allow_failover: bool,
+    ) -> None:
+        """Record a provider skipped because no circuit permit was available."""
+        state = await self.circuit_breaker.state(
+            provider_cfg.name,
+            recovery_timeout=provider_cfg.recovery_timeout,
+        )
+        p_latency = (time.time() - p_start) * 1000
+        message = (
+            f"provider 熔断暂不可用 (state={state.value}, HALF_OPEN probe 可能正在执行)"
+        )
+        entry = {
+            "provider": provider_cfg.name,
+            "model": provider_cfg.model,
+            "priority": provider_cfg.priority,
+            "error": message,
+            "retryable": True,
+            "reason": "circuit_unavailable",
+            "latency_ms": round(p_latency),
+        }
+        errors.append(entry)
+
+        if outcome is not None:
+            outcome.setdefault("_failures", []).append(
+                {
+                    "provider": provider_cfg.name,
+                    "model": provider_cfg.model,
+                    "error": message,
+                    "latency_ms": round(p_latency),
+                }
+            )
+
+        logger.info(
+            "provider.circuit_skip",
+            request_id=request_id,
+            provider=provider_cfg.name,
+            model=provider_cfg.model,
+            state=state.value,
+        )
+
+        next_idx = i + 1
+        if allow_failover and next_idx < len(providers):
+            next_cfg = providers[next_idx]
+            logger.info(
+                "failover",
+                request_id=request_id,
+                from_provider=provider_cfg.name,
+                from_model=provider_cfg.model,
+                to_provider=next_cfg.name,
+                to_model=next_cfg.model,
+                reason="circuit_unavailable",
+            )
+
     async def route_non_stream(
         self, request_body: dict, outcome: dict | None = None
     ) -> dict:
         """非流式路由: 返回第一个成功 provider 的响应 JSON.
 
-        outcome 可选字典，成功时会写入最终 provider、模型、尝试次数、URL，
-        以及保留未配置 ``None`` 值的价格信息。
+        outcome 可选字典，成功时写入最终 provider、模型、URL 和价格信息。
+        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
         """
+        outcome = outcome if outcome is not None else {}
+        outcome["attempt"] = 0
+        while True:
+            generation = self._config_generation
+            try:
+                return await self._route_non_stream_once(
+                    request_body,
+                    outcome,
+                    generation=generation,
+                )
+            except _RoutingConfigChanged:
+                logger.info(
+                    "request.reroute_config_reload",
+                    model=request_body.get("model", ""),
+                    stream=False,
+                    from_generation=generation,
+                    to_generation=self._config_generation,
+                )
+
+    async def _route_non_stream_once(
+        self,
+        request_body: dict,
+        outcome: dict,
+        *,
+        generation: int,
+    ) -> dict:
+        """Route once against one immutable configuration generation."""
         virtual_model = request_body.get("model", "")
+        providers = await self._get_providers_for_generation(
+            virtual_model, generation, outcome
+        )
         allow_failover = self.config.router.mode == "failover"
-        providers = await self._get_providers(virtual_model)
 
         request_id = get_contextvars().get("request_id") or str(uuid.uuid4())
         start_time = time.time()
@@ -327,26 +470,49 @@ class Router:
         )
 
         for i, provider_cfg in enumerate(providers):
-            attempt = i + 1
             p_start = time.time()
-
-            logger.info(
-                "provider.try",
-                request_id=request_id,
-                provider=provider_cfg.name,
-                model=provider_cfg.model,
-                priority=provider_cfg.priority,
-                attempt=attempt,
-            )
+            permit: CircuitPermit | None = None
 
             try:
                 async with self.provider_gate.slot(provider_cfg):
+                    permit = await self.circuit_breaker.try_acquire(
+                        provider_cfg.name,
+                        recovery_timeout=provider_cfg.recovery_timeout,
+                    )
+                    if permit is None:
+                        await self._record_circuit_skip(
+                            provider_cfg,
+                            request_id,
+                            p_start,
+                            errors,
+                            outcome,
+                            providers,
+                            i,
+                            allow_failover=allow_failover,
+                        )
+                        continue
+
+                    self._ensure_config_generation(generation)
+                    attempt = outcome["attempt"] + 1
+                    outcome["attempt"] = attempt
+                    logger.info(
+                        "provider.try",
+                        request_id=request_id,
+                        provider=provider_cfg.name,
+                        model=provider_cfg.model,
+                        priority=provider_cfg.priority,
+                        attempt=attempt,
+                        circuit_probe=permit.probe,
+                    )
                     provider = _create_provider(provider_cfg, self.http)
                     result = await provider.send(request_body)
                     p_latency = (time.time() - p_start) * 1000
                     total_latency = (time.time() - start_time) * 1000
 
-                    await self.circuit_breaker.record_success(provider_cfg.name)
+                    await self.circuit_breaker.record_success(
+                        provider_cfg.name,
+                        permit=permit,
+                    )
 
                     logger.info(
                         "provider.success",
@@ -374,6 +540,7 @@ class Router:
                     return result
 
             except (ProviderCooldownError, ProviderCapacityError) as e:
+                self._ensure_config_generation(generation)
                 await self._record_gate_skip(
                     e,
                     provider_cfg,
@@ -397,6 +564,7 @@ class Router:
                         outcome,
                         providers,
                         i,
+                        permit=permit,
                         allow_failover=allow_failover,
                     )
                 except StickyRateLimited as srl:
@@ -406,20 +574,65 @@ class Router:
                         kind="rate_limit",
                         retry_after=srl.retry_after,
                     ) from e
+            finally:
+                if permit is not None:
+                    await self.circuit_breaker.release(permit)
 
-        raise self._exhausted(virtual_model, errors, start_time, len(providers))
+        self._ensure_config_generation(generation)
+        raise self._exhausted(virtual_model, errors, start_time, outcome["attempt"])
 
     async def route_stream(
         self, request_body: dict, outcome: dict | None = None
     ) -> AsyncGenerator[bytes, None]:
         """流式路由: 返回第一个成功 provider 的 SSE 流.
 
-        outcome 可选字典，成功时会写入最终 provider、模型、尝试次数、URL，
-        以及保留未配置 ``None`` 值的价格信息。
+        outcome 可选字典，开始调用时写入 provider、模型、URL 和价格信息。
+        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        每个 SSE 事件完整校验后才交付，首个事件前的错误仍允许故障转移。
         """
+        outcome = outcome if outcome is not None else {}
+        outcome["attempt"] = 0
+        client_started = False
+        while True:
+            generation = self._config_generation
+            generation_stream = self._route_stream_once(
+                request_body,
+                outcome,
+                generation=generation,
+            )
+            try:
+                async for chunk in generation_stream:
+                    client_started = True
+                    yield chunk
+                return
+            except _RoutingConfigChanged:
+                if client_started:
+                    raise RuntimeError(
+                        "routing configuration changed after stream output started"
+                    ) from None
+                logger.info(
+                    "request.reroute_config_reload",
+                    model=request_body.get("model", ""),
+                    stream=True,
+                    from_generation=generation,
+                    to_generation=self._config_generation,
+                )
+            finally:
+                await generation_stream.aclose()
+
+    async def _route_stream_once(
+        self,
+        request_body: dict,
+        outcome: dict,
+        *,
+        generation: int,
+    ) -> AsyncGenerator[bytes, None]:
+        """Route one stream against one immutable configuration generation."""
         virtual_model = request_body.get("model", "")
+        providers = await self._get_providers_for_generation(
+            virtual_model, generation, outcome
+        )
         allow_failover = self.config.router.mode == "failover"
-        providers = await self._get_providers(virtual_model)
 
         request_id = get_contextvars().get("request_id") or str(uuid.uuid4())
         start_time = time.time()
@@ -438,46 +651,43 @@ class Router:
         client_started = False
 
         for i, provider_cfg in enumerate(providers):
-            attempt = i + 1
             p_start = time.time()
-
-            logger.info(
-                "provider.try",
-                request_id=request_id,
-                provider=provider_cfg.name,
-                model=provider_cfg.model,
-                priority=provider_cfg.priority,
-                attempt=attempt,
-            )
+            permit: CircuitPermit | None = None
 
             try:
                 async with self.provider_gate.slot(provider_cfg):
-                    provider = _create_provider(provider_cfg, self.http)
-                    error_buffer = b""
-                    async for chunk in provider.send_stream(request_body):
-                        error_buffer += chunk
-                        # 先检测再截断，避免大 chunk 中靠前的 event:error 被 trim 掉
-                        _check_stream_error(error_buffer)
-                        if len(error_buffer) > 8192:
-                            error_buffer = error_buffer[-4096:]
-                        # 已 yield 后 client_started=True，异常不会再 failover
-                        client_started = True
-                        yield chunk
-                    p_latency = (time.time() - p_start) * 1000
-                    total_latency = (time.time() - start_time) * 1000
+                    permit = await self.circuit_breaker.try_acquire(
+                        provider_cfg.name,
+                        recovery_timeout=provider_cfg.recovery_timeout,
+                    )
+                    if permit is None:
+                        await self._record_circuit_skip(
+                            provider_cfg,
+                            request_id,
+                            p_start,
+                            errors,
+                            outcome,
+                            providers,
+                            i,
+                            allow_failover=allow_failover,
+                        )
+                        continue
 
-                    await self.circuit_breaker.record_success(provider_cfg.name)
-
+                    self._ensure_config_generation(generation)
+                    attempt = outcome["attempt"] + 1
+                    outcome["attempt"] = attempt
                     logger.info(
-                        "provider.success",
+                        "provider.try",
                         request_id=request_id,
                         provider=provider_cfg.name,
                         model=provider_cfg.model,
+                        priority=provider_cfg.priority,
                         attempt=attempt,
-                        provider_latency_ms=round(p_latency),
-                        total_latency_ms=round(total_latency),
+                        circuit_probe=permit.probe,
                     )
-
+                    provider = _create_provider(provider_cfg, self.http)
+                    # 流可能在自然结束前因客户端断开而被关闭；候选一旦真正开始
+                    # 调用就先暴露元数据，使取消记录仍能归因到实际 Provider。
                     if outcome is not None:
                         outcome["provider_type"] = provider_cfg.type
                         outcome["provider_name"] = provider_cfg.name
@@ -490,10 +700,53 @@ class Router:
                             "cache_read": provider_cfg.cache_read_price_per_million,
                             "cache_write": provider_cfg.cache_write_price_per_million,
                         }
+                    error_decoder = SSEDecoder()
+                    async with aclosing(provider.send_stream(request_body)) as upstream:
+                        async for chunk in upstream:
+                            try:
+                                frames = error_decoder.feed_frames(chunk)
+                            except SSEDecodeError as exc:
+                                raise NonRetryableError(
+                                    f"Invalid SSE stream: {exc}"
+                                ) from exc
+                            for frame in frames:
+                                if frame.event is not None:
+                                    _raise_for_stream_error(frame.event)
+                                elif not client_started:
+                                    # 初始 keepalive 不能决定使用哪个 Provider。
+                                    continue
+                                client_started = True
+                                yield frame.raw
+                    try:
+                        error_decoder.finish()
+                    except SSEDecodeError as exc:
+                        raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
+                    if not client_started:
+                        raise NonRetryableError(
+                            "Upstream stream ended without an SSE data event"
+                        )
+                    p_latency = (time.time() - p_start) * 1000
+                    total_latency = (time.time() - start_time) * 1000
+
+                    await self.circuit_breaker.record_success(
+                        provider_cfg.name,
+                        permit=permit,
+                    )
+
+                    logger.info(
+                        "provider.success",
+                        request_id=request_id,
+                        provider=provider_cfg.name,
+                        model=provider_cfg.model,
+                        attempt=attempt,
+                        provider_latency_ms=round(p_latency),
+                        total_latency_ms=round(total_latency),
+                    )
 
                     return
 
             except (ProviderCooldownError, ProviderCapacityError) as e:
+                self._ensure_config_generation(generation)
                 can_failover = allow_failover and not client_started
                 await self._record_gate_skip(
                     e,
@@ -521,6 +774,7 @@ class Router:
                         outcome,
                         providers,
                         i,
+                        permit=permit,
                         allow_failover=can_failover,
                     )
                 except StickyRateLimited as srl:
@@ -533,8 +787,12 @@ class Router:
                 if client_started:
                     # 已向客户端发送数据后不再 failover；可重试错误也直接抛出
                     raise
+            finally:
+                if permit is not None:
+                    await self.circuit_breaker.release(permit)
 
-        raise self._exhausted(virtual_model, errors, start_time, len(providers))
+        self._ensure_config_generation(generation)
+        raise self._exhausted(virtual_model, errors, start_time, outcome["attempt"])
 
     def _exhausted(
         self,
@@ -624,18 +882,16 @@ class Router:
                 )
                 continue
 
-            if not await self.circuit_breaker.is_available(
-                p.name, recovery_timeout=p.recovery_timeout
-            ):
+            circuit_state = await self.circuit_breaker.state(
+                p.name,
+                recovery_timeout=p.recovery_timeout,
+            )
+            if circuit_state == CircuitState.OPEN:
                 skipped.append(
                     {
                         "provider": p.name,
                         "model": p.model,
-                        "state": (
-                            await self.circuit_breaker.state(
-                                p.name, recovery_timeout=p.recovery_timeout
-                            )
-                        ).value,
+                        "state": circuit_state.value,
                         "retryable": True,
                         "reason": "circuit_open",
                     }

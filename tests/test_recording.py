@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import pytest
 from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.testing import capture_logs
 
-from agent_router.db import CallStore
+from agent_router.db import MAX_PERSISTED_BODY_BYTES, CallStore
 from agent_router.recording import CallRecorder
 
 
@@ -164,6 +165,58 @@ class TestCallRecorder:
             entry for entry in logs if entry["event"] == "call_record.failed"
         )
         assert failure_log["request_id"] == "req-record-failure"
+
+    async def test_large_bodies_are_bounded_before_persistence(self, store):
+        request_text = "输入" * MAX_PERSISTED_BODY_BYTES
+        response_text = "output" * MAX_PERSISTED_BODY_BYTES
+        recorder = CallRecorder(store)
+        await recorder.start()
+        try:
+            assert recorder.submit(
+                virtual_model="large-body",
+                status="success",
+                request_body={"messages": [{"role": "user", "content": request_text}]},
+                response_body={"content": [{"type": "text", "text": response_text}]},
+            )
+            await recorder.wait_idle(timeout=1)
+        finally:
+            await recorder.close()
+
+        summaries, total = await store.list_calls()
+        assert total == 1
+        detail = await store.get_call(summaries[0]["id"])
+        assert detail is not None
+        assert len(detail["request_body"].encode("utf-8")) <= (MAX_PERSISTED_BODY_BYTES)
+        assert len(detail["response_body"].encode("utf-8")) <= (
+            MAX_PERSISTED_BODY_BYTES
+        )
+        stored_request = json.loads(detail["request_body"])
+        stored_response = json.loads(detail["response_body"])
+        assert stored_request["_truncated"] is True
+        assert stored_response["_truncated"] is True
+        assert stored_request["_original_bytes"] > MAX_PERSISTED_BODY_BYTES
+        assert stored_response["_original_bytes"] > MAX_PERSISTED_BODY_BYTES
+        assert detail["request_tokens"] == len(request_text) // 3
+
+    async def test_explicit_request_token_count_is_not_replaced(self, store):
+        recorder = CallRecorder(store)
+        await recorder.start()
+        try:
+            assert recorder.submit(
+                virtual_model="explicit-tokens",
+                status="success",
+                request_body={"messages": [{"content": "estimated differently"}]},
+                request_tokens=17,
+            )
+            await recorder.wait_idle(timeout=1)
+        finally:
+            await recorder.close()
+
+        summaries, total = await store.list_calls()
+        assert total == 1
+        detail = await store.get_call(summaries[0]["id"])
+        assert detail is not None
+        assert detail["request_tokens"] == 17
 
     def test_unavailable_submit_tolerates_untyped_missing_fields(self):
         recorder = CallRecorder(CallStore(":memory:"))

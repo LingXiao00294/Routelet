@@ -46,7 +46,20 @@ export async function request<T>(
 ): Promise<T> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, ...init } = options;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const callerSignal = init.signal;
+  let abortReason: "caller" | "timeout" | null = null;
+  const abortFromCaller = () => {
+    if (abortReason) return;
+    abortReason = "caller";
+    controller.abort();
+  };
+  if (callerSignal?.aborted) abortFromCaller();
+  else callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
+  const timer = setTimeout(() => {
+    if (abortReason) return;
+    abortReason = "timeout";
+    controller.abort();
+  }, timeoutMs);
 
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type")) {
@@ -85,11 +98,15 @@ export async function request<T>(
     return data as T;
   } catch (err) {
     if (err instanceof ApiError) throw err;
-    if (err instanceof DOMException && err.name === "AbortError") {
-      throw new ApiError(0, "请求超时");
+    if (
+      controller.signal.aborted ||
+      (err instanceof DOMException && err.name === "AbortError")
+    ) {
+      throw new ApiError(0, abortReason === "caller" ? "请求已取消" : "请求超时");
     }
     throw new ApiError(0, err instanceof Error ? err.message : "网络错误");
   } finally {
     clearTimeout(timer);
+    callerSignal?.removeEventListener("abort", abortFromCaller);
   }
 }

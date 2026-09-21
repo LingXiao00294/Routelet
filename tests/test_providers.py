@@ -6,7 +6,12 @@ from typing import cast
 import httpx
 import pytest
 from agent_router.config import ProviderConfig
-from agent_router.providers.anthropic_compat import AnthropicCompatProvider
+from agent_router.providers.anthropic_compat import (
+    FORWARDED_ANTHROPIC_HEADERS_KEY,
+    MAX_RETRY_AFTER_SECONDS,
+    AnthropicCompatProvider,
+    parse_retry_after,
+)
 from agent_router.providers.base import RetryableError
 
 
@@ -58,6 +63,24 @@ class TestAnthropicCompatProvider:
         headers = provider._build_headers({})
         assert headers["Authorization"] == "Bearer not-anthropic-key-format"
 
+    def test_build_headers_forwards_version_and_beta_without_body_leak(self, provider):
+        body = {
+            "model": "virtual",
+            "anthropic_version": "legacy-version",
+            FORWARDED_ANTHROPIC_HEADERS_KEY: {
+                "anthropic-version": "2026-07-01",
+                "anthropic-beta": "context-1m-2025-08-07",
+            },
+        }
+
+        headers = provider._build_headers(body)
+        prepared = provider._prepare_body(body)
+
+        assert headers["anthropic-version"] == "2026-07-01"
+        assert headers["anthropic-beta"] == "context-1m-2025-08-07"
+        assert FORWARDED_ANTHROPIC_HEADERS_KEY not in prepared
+        assert "anthropic_version" not in prepared
+
     @pytest.mark.asyncio
     async def test_send_retryable_429(self):
         """测试 HTTP 429 触发可重试限流错误."""
@@ -98,6 +121,46 @@ class TestAnthropicCompatProvider:
             with pytest.raises(RetryableError) as exc:
                 await provider.send({"model": "test", "max_tokens": 10, "messages": []})
             assert exc.value.rate_limited is True
+
+    @pytest.mark.parametrize("status", [500, 501, 507, 599])
+    @pytest.mark.asyncio
+    async def test_send_retries_every_server_error(self, status):
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(status, text="upstream unavailable")
+        )
+        config = ProviderConfig(
+            type="anthropic",
+            model="test",
+            api_key="sk-test",
+            base_url="https://api.example.com",
+            priority=1,
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = AnthropicCompatProvider(config, client)
+            with pytest.raises(RetryableError, match=f"HTTP {status}"):
+                await provider.send({"model": "test", "max_tokens": 10, "messages": []})
+
+    @pytest.mark.parametrize(
+        "error_type",
+        [httpx.WriteTimeout, httpx.ReadError, httpx.WriteError],
+    )
+    @pytest.mark.asyncio
+    async def test_send_retries_transient_transport_errors(self, error_type):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise error_type("transient transport failure", request=request)
+
+        transport = httpx.MockTransport(handler)
+        config = ProviderConfig(
+            type="anthropic",
+            model="test",
+            api_key="sk-test",
+            base_url="https://api.example.com",
+            priority=1,
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            provider = AnthropicCompatProvider(config, client)
+            with pytest.raises(RetryableError, match="transient transport failure"):
+                await provider.send({"model": "test", "max_tokens": 10, "messages": []})
 
     @pytest.mark.asyncio
     async def test_send_retryable_401(self):
@@ -190,3 +253,12 @@ class TestAnthropicCompatProvider:
             priority=1,
         )
         assert config.base_url == "https://api.com"
+
+
+@pytest.mark.parametrize("value", ["inf", "1e309", "-1", "not-a-delay"])
+def test_parse_retry_after_rejects_unsafe_values(value):
+    assert parse_retry_after(value) is None
+
+
+def test_parse_retry_after_caps_large_delays():
+    assert parse_retry_after("999999") == MAX_RETRY_AFTER_SECONDS

@@ -37,6 +37,45 @@ def _cfg(
 
 
 class TestProviderGateConcurrency:
+    async def test_request_cannot_overwrite_authoritative_hot_reload_limits(self):
+        gate = ProviderGate()
+        gate.configure([_cfg(max_concurrent=3, max_queue=4)])
+
+        async with gate.slot(_cfg(max_concurrent=1, max_queue=0)):
+            snapshot = gate.snapshot()["p1"]
+
+        assert snapshot["max_concurrent"] == 3
+        assert snapshot["max_queue"] == 4
+
+    async def test_removing_provider_rejects_queued_request(self):
+        gate = ProviderGate()
+        cfg = _cfg(max_concurrent=1, max_queue=1, queue_wait_timeout=2.0)
+        gate.configure([cfg])
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def holder():
+            async with gate.slot(cfg):
+                entered.set()
+                await release.wait()
+
+        async def waiter():
+            async with gate.slot(cfg):
+                raise AssertionError("removed provider must not receive queued work")
+
+        hold_task = asyncio.create_task(holder())
+        await entered.wait()
+        wait_task = asyncio.create_task(waiter())
+        await asyncio.sleep(0.05)
+
+        gate.configure([])
+
+        with pytest.raises(ProviderCapacityError, match="配置已更新或移除"):
+            await wait_task
+        release.set()
+        await hold_task
+        assert gate.snapshot()["p1"]["waiting"] == 0
+
     async def test_unlimited_by_default(self):
         gate = ProviderGate()
         cfg = _cfg(max_concurrent=0)
@@ -157,12 +196,11 @@ class TestProviderGateCooldown:
         async with gate.slot(cfg):
             pass
 
-    async def test_configure_unlimited_wakes_waiter(self):
+    async def test_configure_unlimited_invalidates_waiter(self):
         gate = ProviderGate()
         cfg = _cfg(max_concurrent=1, max_queue=2, queue_wait_timeout=2.0)
         entered = asyncio.Event()
         release = asyncio.Event()
-        waiter_got = asyncio.Event()
 
         async def holder():
             async with gate.slot(cfg):
@@ -171,18 +209,18 @@ class TestProviderGateCooldown:
 
         async def waiter():
             async with gate.slot(cfg):
-                waiter_got.set()
+                raise AssertionError("stale waiter must re-enter routing")
 
         task = asyncio.create_task(holder())
         await entered.wait()
         wait_task = asyncio.create_task(waiter())
         await asyncio.sleep(0.05)
-        # 热重载取消并发限制，应唤醒排队请求
+        # 即使热重载放宽限制，旧 waiter 也可能携带旧 URL/key，必须重新路由。
         gate.configure([_cfg(max_concurrent=0, max_queue=0)])
-        await asyncio.wait_for(waiter_got.wait(), timeout=1.0)
+        with pytest.raises(ProviderCapacityError, match="配置已更新或移除"):
+            await wait_task
         release.set()
         await task
-        await wait_task
 
     async def test_queued_waiter_rechecks_cooldown(self):
         """持有者进入冷却并释放槽位后，排队者应收到冷却错误而非立刻打上游."""

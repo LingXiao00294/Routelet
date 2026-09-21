@@ -205,7 +205,12 @@ useAutoRefresh(async () => {
 
 .day-switch {
   display: flex;
+  flex-shrink: 0;
   gap: 0.35rem;
+}
+
+.day-switch .btn {
+  white-space: nowrap;
 }
 
 .alert {
@@ -224,6 +229,10 @@ useAutoRefresh(async () => {
   grid-template-columns: 1.2fr 1fr;
   gap: 1rem;
   margin-top: 1rem;
+}
+
+.grid-2 > .panel {
+  min-width: 0;
 }
 
 .panel {
@@ -255,6 +264,20 @@ useAutoRefresh(async () => {
 @media (max-width: 960px) {
   .grid-2 {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 520px) {
+  .page-head {
+    flex-direction: column;
+  }
+
+  .day-switch {
+    align-self: stretch;
+  }
+
+  .day-switch .btn {
+    flex: 1;
   }
 }
 </style>

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
+import re
 from pathlib import Path
 import tomllib
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -10,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from agent_router import app as app_module
 from agent_router.api import config as config_api
 from agent_router.app import create_app
+from agent_router.cli import command_config_validate
 from agent_router.config import (
     ActualModelDef,
     AppConfig,
@@ -65,6 +70,87 @@ models = [
 """
 
 
+_INVALID_OPERATIONAL_CONFIG_CASES = (
+    pytest.param("server", "host", "   ", id="server-blank-host"),
+    pytest.param("server", "port", 0, id="server-port-below-range"),
+    pytest.param("server", "port", 65536, id="server-port-above-range"),
+    pytest.param("server", "log_max_bytes", 0, id="server-zero-log-size"),
+    pytest.param("server", "log_backup_count", -1, id="server-negative-backups"),
+    pytest.param("router", "failure_threshold", 0, id="router-zero-threshold"),
+    pytest.param("router", "recovery_timeout", 0, id="router-zero-recovery"),
+    pytest.param("router", "recovery_timeout", "inf", id="router-infinite-recovery"),
+    pytest.param("router", "recovery_timeout", "nan", id="router-nan-recovery"),
+    pytest.param("provider", "base_url", "", id="provider-empty-url"),
+    pytest.param("provider", "base_url", "/relative", id="provider-relative-url"),
+    pytest.param("provider", "base_url", "ftp://p1.test", id="provider-ftp-url"),
+    pytest.param("provider", "base_url", "https:///path", id="provider-missing-host"),
+    pytest.param(
+        "provider",
+        "base_url",
+        "https://p1.test?token=secret",
+        id="provider-url-query",
+    ),
+    pytest.param(
+        "provider",
+        "base_url",
+        "https://p1.test#fragment",
+        id="provider-url-fragment",
+    ),
+    pytest.param(
+        "provider",
+        "base_url",
+        "https://user:password@p1.test",
+        id="provider-url-userinfo",
+    ),
+    pytest.param("provider", "timeout_seconds", 0, id="provider-zero-timeout"),
+    pytest.param("provider", "timeout_seconds", "inf", id="provider-infinite-timeout"),
+    pytest.param("provider", "timeout_seconds", "nan", id="provider-nan-timeout"),
+    pytest.param("provider", "failure_threshold", 0, id="provider-zero-threshold"),
+    pytest.param("provider", "recovery_timeout", 0, id="provider-zero-recovery"),
+    pytest.param(
+        "provider",
+        "recovery_timeout",
+        "inf",
+        id="provider-infinite-recovery",
+    ),
+    pytest.param("provider", "recovery_timeout", "nan", id="provider-nan-recovery"),
+    pytest.param("provider", "queue_wait_timeout", 0, id="provider-zero-queue-wait"),
+    pytest.param(
+        "provider",
+        "queue_wait_timeout",
+        "inf",
+        id="provider-infinite-queue-wait",
+    ),
+    pytest.param("provider", "queue_wait_timeout", "nan", id="provider-nan-queue-wait"),
+    pytest.param("provider", "rate_limit_cooldown", 0, id="provider-zero-cooldown"),
+    pytest.param(
+        "provider",
+        "rate_limit_cooldown",
+        "inf",
+        id="provider-infinite-cooldown",
+    ),
+    pytest.param("provider", "rate_limit_cooldown", "nan", id="provider-nan-cooldown"),
+)
+
+
+def test_example_config_declares_every_environment_variable() -> None:
+    """Ensure the quick-start environment file satisfies the example config."""
+    project_root = Path(__file__).resolve().parents[1]
+    config_text = (project_root / "config.toml.example").read_text(encoding="utf-8")
+    env_text = (project_root / ".env.example").read_text(encoding="utf-8")
+
+    referenced = set(re.findall(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", config_text))
+    declared = {
+        line.split("=", maxsplit=1)[0].strip()
+        for line in env_text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#") and "=" in line
+    }
+
+    assert referenced <= declared, (
+        f".env.example 缺少变量: {sorted(referenced - declared)}"
+    )
+
+
 def _write_config(tmp_path: Path, content: str = BASE_TOML) -> Path:
     """Write a TOML fixture and return its path."""
     path = tmp_path / "config.toml"
@@ -72,13 +158,24 @@ def _write_config(tmp_path: Path, content: str = BASE_TOML) -> Path:
     return path
 
 
-def _raw_config() -> dict:
+def _raw_config() -> dict[str, Any]:
     """Return a fresh parsed copy of the canonical test configuration."""
     return tomllib.loads(BASE_TOML)
 
 
+def _invalid_operational_config(
+    section: str, field: str, value: object
+) -> dict[str, Any]:
+    """Return canonical config with one invalid operational setting."""
+    raw = _raw_config()
+    target = raw["providers"]["p1"] if section == "provider" else raw[section]
+    target[field] = value
+    return raw
+
+
 def _assert_no_temp_file(path: Path) -> None:
     assert not path.with_suffix(path.suffix + ".tmp").exists()
+    assert not list(path.parent.glob(f".{path.name}.*.tmp"))
 
 
 @pytest.fixture
@@ -164,6 +261,45 @@ class TestConfigDomainModel:
         assert zero.input_price_per_million == 0.0
 
     @pytest.mark.parametrize(
+        ("section", "field", "value"), _INVALID_OPERATIONAL_CONFIG_CASES
+    )
+    def test_rejects_invalid_operational_settings_in_parser_and_cli_validate(
+        self, section, field, value, tmp_path, capsys
+    ):
+        """Reject the same invalid settings through parser and CLI validation."""
+        raw = _invalid_operational_config(section, field, value)
+
+        with pytest.raises(ConfigError) as exc_info:
+            parse_config_data(raw)
+        assert field in str(exc_info.value)
+
+        path = _write_config(tmp_path, config_api._serialize_toml(raw))
+        exit_code = command_config_validate(
+            SimpleNamespace(
+                config=str(path),
+                env_file="",
+                no_env_file=True,
+            )
+        )
+
+        assert exit_code == 1
+        assert field in capsys.readouterr().err
+
+    @pytest.mark.parametrize("port", [1, 65535])
+    def test_accepts_server_port_boundaries(self, port):
+        """Accept both inclusive TCP port boundaries."""
+        raw = _raw_config()
+        raw["server"]["port"] = port
+        raw["server"]["log_max_bytes"] = 1
+        raw["server"]["log_backup_count"] = 0
+
+        config = parse_config_data(raw)
+
+        assert config.server.port == port
+        assert config.server.log_max_bytes == 1
+        assert config.server.log_backup_count == 0
+
+    @pytest.mark.parametrize(
         ("mutate", "message"),
         [
             (
@@ -222,6 +358,13 @@ class TestConfigDomainModel:
         config = parse_config_data(raw)
 
         assert config.providers["empty"].models == {}
+
+    def test_rejects_provider_types_without_runtime_adapters(self):
+        raw = _raw_config()
+        raw["providers"]["p1"]["type"] = "openai"
+
+        with pytest.raises(ConfigError, match="Input should be 'anthropic'"):
+            parse_config_data(raw)
 
     def test_rejects_empty_virtual_model_chain(self):
         raw = _raw_config()
@@ -391,6 +534,28 @@ class TestConfigApi:
         assert put_response.status_code == 400
         assert "现有 Provider 'p1' 配置必须是对象" in put_response.text
 
+    @pytest.mark.parametrize(
+        ("section", "field", "value"), _INVALID_OPERATIONAL_CONFIG_CASES
+    )
+    async def test_put_rejects_invalid_operational_settings_before_writing(
+        self, section, field, value, tmp_path, store
+    ):
+        """Apply domain validation to PUT without changing file or runtime state."""
+        path = _write_config(tmp_path)
+        original = path.read_bytes()
+        app, client = await self._client(path, store)
+        old_runtime = app.state.router_engine.config
+        body = _invalid_operational_config(section, field, value)
+
+        async with client:
+            response = await client.put("/api/config", json=body)
+
+        assert response.status_code == 400
+        assert field in response.text
+        assert path.read_bytes() == original
+        assert app.state.router_engine.config is old_runtime
+        _assert_no_temp_file(path)
+
     async def test_put_writes_only_new_format_and_preserves_masked_key(
         self, tmp_path, store
     ):
@@ -415,6 +580,55 @@ class TestConfigApi:
             provider.name
             for provider in app.state.router_engine.config.models["router"].providers
         ] == ["p2", "p1"]
+        _assert_no_temp_file(path)
+
+    async def test_concurrent_puts_keep_disk_and_runtime_in_the_same_order(
+        self, tmp_path, store, monkeypatch
+    ):
+        """Serialize overlapping writes through their complete reload transaction."""
+        path = _write_config(tmp_path)
+        app, client = await self._client(path, store)
+        first_reload_started = asyncio.Event()
+        release_first_reload = asyncio.Event()
+        runtime_port = 9456
+
+        async def controlled_reload(config: AppConfig) -> None:
+            nonlocal runtime_port
+            if config.server.port == 9457:
+                first_reload_started.set()
+                await release_first_reload.wait()
+            runtime_port = config.server.port
+
+        monkeypatch.setattr(
+            app.state.router_engine,
+            "reload_config",
+            controlled_reload,
+        )
+        first_body = _raw_config()
+        first_body["server"]["port"] = 9457
+        second_body = _raw_config()
+        second_body["server"]["port"] = 9458
+
+        async with client:
+            first = asyncio.create_task(client.put("/api/config", json=first_body))
+            await first_reload_started.wait()
+            second = asyncio.create_task(client.put("/api/config", json=second_body))
+            read_during_reload = asyncio.create_task(client.get("/api/config"))
+            await asyncio.wait({second, read_during_reload}, timeout=0.1)
+            assert not second.done()
+            assert not read_during_reload.done()
+            release_first_reload.set()
+            first_response, second_response, read_response = await asyncio.gather(
+                first,
+                second,
+                read_during_reload,
+            )
+
+        assert first_response.status_code == 200, first_response.text
+        assert second_response.status_code == 200, second_response.text
+        assert read_response.status_code == 200, read_response.text
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["server"]["port"] == 9458
+        assert runtime_port == 9458
         _assert_no_temp_file(path)
 
     async def test_get_payload_can_be_put_back_without_readonly_key_metadata(

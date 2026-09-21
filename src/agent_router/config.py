@@ -6,6 +6,7 @@ import tomllib
 from math import isfinite
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -27,6 +28,45 @@ def _validate_non_negative_price(value: float | None) -> float | None:
     if value is not None and (not isfinite(value) or value < 0):
         raise ValueError("模型费用必须大于等于 0 且为有限值")
     return value
+
+
+def _validate_positive_finite(value: float) -> float:
+    """Return a finite positive number or raise a validation error."""
+    if not isfinite(value) or value <= 0:
+        raise ValueError("必须大于 0 且为有限值")
+    return value
+
+
+def _validate_optional_positive_finite(value: float | None) -> float | None:
+    """Validate an optional finite positive number."""
+    if value is None:
+        return None
+    return _validate_positive_finite(value)
+
+
+def _normalize_http_base_url(value: str) -> str:
+    """Return a normalized absolute HTTP(S) base URL."""
+    normalized = value.rstrip("/")
+    if not normalized or any(character.isspace() for character in normalized):
+        raise ValueError("base_url 必须是绝对 http(s) URL")
+
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("base_url 必须是绝对 http(s) URL") from exc
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not hostname:
+        raise ValueError("base_url 必须是绝对 http(s) URL")
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("base_url 不得包含用户信息、查询参数或片段")
+    return normalized
 
 
 class ConfigError(ValueError):
@@ -60,7 +100,7 @@ class ProviderDef(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    type: Literal["anthropic", "openai"]
+    type: Literal["anthropic"]
     api_key: str
     base_url: str
     timeout_seconds: float = 120.0
@@ -82,21 +122,35 @@ class ProviderDef(BaseModel):
 
     @field_validator("base_url")
     @classmethod
-    def strip_trailing_slash(cls, value: str) -> str:
-        return value.rstrip("/")
+    def absolute_http_base_url(cls, value: str) -> str:
+        """Validate and normalize the Provider base URL."""
+        return _normalize_http_base_url(value)
+
+    @field_validator("timeout_seconds", "queue_wait_timeout", "rate_limit_cooldown")
+    @classmethod
+    def positive_finite_timeout(cls, value: float) -> float:
+        """Validate Provider timeout and cooldown durations."""
+        return _validate_positive_finite(value)
+
+    @field_validator("failure_threshold")
+    @classmethod
+    def positive_failure_threshold(cls, value: int | None) -> int | None:
+        """Validate an optional Provider failure threshold."""
+        if value is not None and value < 1:
+            raise ValueError("failure_threshold 必须大于等于 1")
+        return value
+
+    @field_validator("recovery_timeout")
+    @classmethod
+    def positive_finite_recovery_timeout(cls, value: float | None) -> float | None:
+        """Validate an optional Provider recovery timeout."""
+        return _validate_optional_positive_finite(value)
 
     @field_validator("max_concurrent", "max_queue")
     @classmethod
     def non_negative_int(cls, value: int) -> int:
         if value < 0:
             raise ValueError("必须大于等于 0")
-        return value
-
-    @field_validator("queue_wait_timeout", "rate_limit_cooldown")
-    @classmethod
-    def positive_float(cls, value: float) -> float:
-        if value <= 0:
-            raise ValueError("必须大于 0")
         return value
 
     @field_validator("models")
@@ -149,7 +203,7 @@ class VirtualModelDef(BaseModel):
 class ProviderConfig(BaseModel):
     """Provider 连接设置、实际模型价格与运行时优先级的解析结果。"""
 
-    type: Literal["anthropic", "openai"]
+    type: Literal["anthropic"]
     name: str = ""
     model: str
     api_key: str
@@ -169,8 +223,29 @@ class ProviderConfig(BaseModel):
 
     @field_validator("base_url")
     @classmethod
-    def strip_trailing_slash(cls, value: str) -> str:
-        return value.rstrip("/")
+    def absolute_http_base_url(cls, value: str) -> str:
+        """Validate and normalize the Provider base URL."""
+        return _normalize_http_base_url(value)
+
+    @field_validator("timeout_seconds", "queue_wait_timeout", "rate_limit_cooldown")
+    @classmethod
+    def positive_finite_timeout(cls, value: float) -> float:
+        """Validate Provider timeout and cooldown durations."""
+        return _validate_positive_finite(value)
+
+    @field_validator("failure_threshold")
+    @classmethod
+    def positive_failure_threshold(cls, value: int | None) -> int | None:
+        """Validate an optional Provider failure threshold."""
+        if value is not None and value < 1:
+            raise ValueError("failure_threshold 必须大于等于 1")
+        return value
+
+    @field_validator("recovery_timeout")
+    @classmethod
+    def positive_finite_recovery_timeout(cls, value: float | None) -> float | None:
+        """Validate an optional Provider recovery timeout."""
+        return _validate_optional_positive_finite(value)
 
     @field_validator(*_PRICE_FIELDS)
     @classmethod
@@ -197,6 +272,39 @@ class ServerConfig(BaseModel):
     log_max_bytes: int = DEFAULT_LOG_MAX_BYTES
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
 
+    @field_validator("host")
+    @classmethod
+    def non_blank_host(cls, value: str) -> str:
+        """Validate and normalize the server host."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("host 不能为空")
+        return normalized
+
+    @field_validator("port")
+    @classmethod
+    def valid_port(cls, value: int) -> int:
+        """Validate the TCP port range."""
+        if not 1 <= value <= 65535:
+            raise ValueError("port 必须在 1 到 65535 之间")
+        return value
+
+    @field_validator("log_max_bytes")
+    @classmethod
+    def positive_log_max_bytes(cls, value: int) -> int:
+        """Validate the rotating log size limit."""
+        if value <= 0:
+            raise ValueError("log_max_bytes 必须大于 0")
+        return value
+
+    @field_validator("log_backup_count")
+    @classmethod
+    def non_negative_log_backup_count(cls, value: int) -> int:
+        """Validate the number of retained rotated logs."""
+        if value < 0:
+            raise ValueError("log_backup_count 必须大于等于 0")
+        return value
+
 
 class RouterConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -205,6 +313,20 @@ class RouterConfig(BaseModel):
     recovery_timeout: float = 600.0
     # failover=按数组顺序故障转移；sticky=各虚拟模型只使用 pinned_model。
     mode: Literal["failover", "sticky"] = "sticky"
+
+    @field_validator("failure_threshold")
+    @classmethod
+    def positive_failure_threshold(cls, value: int) -> int:
+        """Validate the global circuit-breaker failure threshold."""
+        if value < 1:
+            raise ValueError("failure_threshold 必须大于等于 1")
+        return value
+
+    @field_validator("recovery_timeout")
+    @classmethod
+    def positive_finite_recovery_timeout(cls, value: float) -> float:
+        """Validate the global circuit-breaker recovery timeout."""
+        return _validate_positive_finite(value)
 
 
 class ConfigDocument(BaseModel):

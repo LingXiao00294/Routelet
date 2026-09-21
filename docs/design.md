@@ -4,10 +4,12 @@
 
 本地 LLM API 路由代理。Claude Code 的 `ANTHROPIC_BASE_URL` 指向本地 router，虚拟模型名映射到多个真实 provider，按优先级路由，故障时自动转移到下一优先级。
 
+> 当前实现状态：仅支持 Anthropic Messages API 兼容 Provider。本文中的 OpenAI 协议转换属于后续路线图，当前配置会在加载阶段拒绝 `type = "openai"`。
+
 ```
 Claude Code → router (本地 FastAPI) → Anthropic API   (优先级 1)
                                     → 智谱 API       (优先级 2, 故障转移)
-                                    → OpenAI API      (优先级 3, 协议转换 + 故障转移)
+                                    → OpenAI API      (规划中，当前不可配置)
 ```
 
 ---
@@ -32,7 +34,7 @@ agent-router/
 │   │   ├── __init__.py
 │   │   ├── base.py                 # 抽象 Provider 接口
 │   │   ├── anthropic_compat.py     # Anthropic 兼容直通
-│   │   └── openai_compat.py        # Anthropic ↔ OpenAI 协议转换
+│   │   └── openai_compat.py        # 规划：Anthropic ↔ OpenAI 协议转换
 │   ├── db.py                        # SQLite 调用记录持久化
 │   ├── api/
 │   │   ├── __init__.py
@@ -156,7 +158,7 @@ class ActualModelDef(BaseModel):
     cache_write_price_per_million: float | None = None
 
 class ProviderDef(BaseModel):
-    type: Literal["anthropic", "openai"]
+    type: Literal["anthropic"]
     api_key: str
     base_url: str
     timeout_seconds: float = 120.0
@@ -211,10 +213,10 @@ class AppConfig(BaseModel):
 
 | 错误 | 是否重试 | 熔断 | 说明 |
 |---|---|---|---|
-| HTTP 401 | ✅ 故障转移 | 🔴 立即熔断 | 认证失败，不会自动恢复 |
-| HTTP 403 | ✅ 故障转移 | 🔴 立即熔断 | 权限不足，不会自动恢复 |
-| HTTP 429 | ✅ 故障转移 | 🟡 连续触发 | 限流 |
-| HTTP 529 | ✅ 故障转移 | 🟡 连续触发 | API 过载 |
+| HTTP 401 | ✅ 故障转移 | 🔴 立即熔断 | 认证失败；恢复超时后半开探测 |
+| HTTP 403 | ✅ 故障转移 | 🔴 立即熔断 | 权限不足；恢复超时后半开探测 |
+| HTTP 429 | ✅ 故障转移 | ❌（短冷却） | 按 `Retry-After` 或默认值暂时跳过 |
+| HTTP 529 | ✅ 故障转移 | ❌（短冷却） | API 过载，按限流策略暂时跳过 |
 | HTTP 5xx | ✅ 故障转移 | 🟡 连续触发 | 服务端错误 |
 | `httpx.ConnectError` | ✅ 故障转移 | 🟡 连续触发 | DNS/连接拒绝 |
 | `httpx.ConnectTimeout` | ✅ 故障转移 | 🟡 连续触发 | 网络不通 |
@@ -247,10 +249,11 @@ HALF_OPEN ──(探测失败)──→ OPEN
 - `recovery_timeout` (默认 600s / 10 分钟): 熔断后等待恢复的时间
 
 **熔断触发策略：**
-- 401/403 (认证/权限错误) → 立即熔断（这类错误不会自动恢复）
-- 429/529/5xx (限流/过载/服务端错误) → 连续失败达阈值后熔断
+- 401/403 (认证/权限错误) → 立即熔断，恢复超时后进入半开探测
+- 429/529 (限流/过载) → 进入 Provider 短冷却，不累计熔断失败次数
+- 5xx 与瞬态连接/超时错误 → 连续失败达阈值后熔断
 
-**集成方式：** Router 在 `_get_providers()` 中通过 `circuit_breaker.is_available()` 过滤已熔断的 provider，在路由成功/失败时调用 `record_success()`/`record_failure()` 更新状态。
+**集成方式：** Router 在候选枚举阶段只读取熔断状态；进入 Provider 容量槽后、真实上游调用前通过 `try_acquire()` 原子领取一次性许可。HALF_OPEN 同一时刻只发出一个探测许可，成功、失败、取消与关闭都会消费或释放；许可携带代际，旧在途请求的迟到结果不会覆盖较新的熔断裁决。
 
 ### 4. providers/ — 适配器
 
@@ -279,7 +282,7 @@ class BaseProvider(ABC):
 
 适用场景：Anthropic 官方 API、智谱 Anthropic 兼容 API、及其他 Anthropic 格式兼容的 provider。
 
-#### openai_compat.py — 协议转换
+#### 规划：openai_compat.py — 协议转换
 
 Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 
@@ -353,11 +356,15 @@ data: {"type":"message_stop"}
 
 **`POST /v1/messages` 处理流程：**
 
-1. 读取请求体 JSON
-2. 提取 `model` 字段 → 查找虚拟模型对应的 provider 链
+1. Router 与独立 Dashboard 代理都以 50 MiB 上限有界读取请求体（包括 chunked 请求），Router 随后解析 JSON，并校验 `model` 为非空字符串、`stream`（若提供）为布尔值
+2. 提取 `model` 字段，并把 `anthropic-version` / `anthropic-beta` 作为仅供 Provider 使用的内部元数据 → 查找虚拟模型对应的 provider 链
 3. 未找到 → 返回 400 + 已知模型列表
-4. `stream: true` → `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`
+4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；完整 SSE 事件逐个校验后才转发，首个有效事件前允许故障转移，初始注释和跨数据块的半个事件不锁定 Provider；无论正常结束、发送失败还是取消都主动关闭内层流
 5. `stream: false` → `JSONResponse(routing.send(...))`
+
+流式上游正常结束时还会校验是否交付过数据事件，以及是否残留缺少结束空行的数据帧；空流和不完整帧按协议错误处理，不能关闭熔断器或写入成功记录。预取阶段及时发现时返回 HTTP 502；响应头已发送后则使用 SSE error 报告错误。
+
+流式调用记录的职责随响应体开始消费而从端点交给包装器。预取期间取消、发送响应头失败、消费中断都提交一次取消记录；未启动响应体时由关闭回调回收已获取的资源并记录，避免依赖未启动生成器的 `finally`。
 
 **`GET /v1/models` 响应格式：**
 
@@ -390,7 +397,13 @@ def main():
 
 ### 7. recording.py + db.py — 调用记录持久化
 
-`CallRecorder` 将请求路径与 SQLite I/O 隔离：请求完成后通过非阻塞 `submit()` 写入进程内有界队列，单个后台 writer 再调用 `CallStore`，使用 `aiosqlite` 顺序写入每次 API 调用的完整信息。writer 随 FastAPI lifespan 启动，关闭时在有限时间内排空已接收记录，然后才关闭数据库。
+`attempt` 在每次真正开始 Provider 调用时递增，并在配置热重载后的重新路由中继续累计；本地排队、冷却和熔断跳过不算上游调用。成功、失败和取消记录共享同一请求的累计计数，未调用上游时为 `0`。
+
+流式和非流式用量进入计费与记录前，共用 token 字段校验：只接受 SQLite 有符号整数范围内的非负整数，排除布尔值，忽略其他值和非对象 usage。有效字段独立保留；非流式上游响应正文不受此校验修改。
+
+统计查询通常使用 SQLite 原生 `SUM`；遇到明确的整数溢出时，仅将 token 聚合替换为 Python 大整数聚合重试，保留分组、筛选及全空值语义。单次费用先按每百万 token 缩放价格，避免乘法中间值溢出；持久化费用或汇总费用非有限时，公开 API 将该费用表示为 `null`，面板显示 `—`，数据库原值保持不变。
+
+`CallRecorder` 将请求路径与 SQLite I/O 隔离：请求完成后先把正文序列化为最多 256 KiB 的有效 JSON，再通过非阻塞 `submit()` 写入进程内有界队列。超限正文保存带 `_truncated`、原始 UTF-8 字节数和文本预览的截断信封；输入 token 仍在截断前估算。单个后台 writer 再调用 `CallStore`，使用 `aiosqlite` 顺序写入。writer 随 FastAPI lifespan 启动，关闭时在有限时间内排空已接收记录，然后才关闭数据库。
 
 调用记录被定义为尽力而为的观测数据。队列已满、SQLite 写入失败或关闭排空超时时只记录结构化错误，不改变正常、错误或流式 API 响应；这些情况下允许缺失对应调用记录。提交时的 `request_id` 会随队列项进入后台 writer，用于关联 `call_record.failed` / `call_record.cancelled` 与原请求。该存储不承担严格计费或审计账本职责。
 
@@ -409,14 +422,14 @@ CREATE TABLE IF NOT EXISTS calls (
     latency_ms      INTEGER,                 -- 总耗时 (毫秒)
 
     -- 请求信息
-    request_body    TEXT,                    -- 完整请求体 JSON
+    request_body    TEXT,                    -- 请求体 JSON 或 256 KiB 有界截断信封
     request_tokens  INTEGER,                 -- 输入 token 估算 (消息长度)
 
     -- 响应信息
     status          TEXT NOT NULL,           -- success / error
     error_type      TEXT,                    -- 错误类型 (rate_limit, server_error, timeout, etc.)
     error_message   TEXT,                    -- 错误详情
-    response_body   TEXT,                    -- 完整响应体 JSON (非流式) 或截断版
+    response_body   TEXT,                    -- 非流式响应 JSON 或 256 KiB 有界截断信封
 
     -- Token 用量 (从响应中提取)
     input_tokens    INTEGER,
@@ -496,7 +509,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 
 ### 10. Dashboard (Vue) — 观测与配置管理
 
-Vue 3 + Vite + TypeScript 前端，从 router 的 `/api/*` 接口获取数据。
+Vue 3 + Vite + TypeScript 前端，从 router 的 `/api/*` 接口获取数据。独立 Dashboard 服务反向代理 `/api/*`、`/v1/*` 与 `/health`，转发时删除固定及 `Connection` 动态声明的 hop-by-hop 头，并在进入内存前执行与 Router 一致的 50 MiB 正文上限。
 
 **页面布局：**
 ```
@@ -526,6 +539,8 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 真实模型图表、统计表、Calls 筛选项和调用详情统一通过 `formatActualModel(provider, model)` 生成 `<provider>/<model>`。Provider 与模型在 API、store 和筛选查询中始终是独立字段，展示字符串不参与身份解析。调用详情额外展示四类价格快照，以区分未配置 (`NULL`) 与显式 0。
 
 配置页的数据层与后端领域模型一致：Provider draft 持有 `models: Record<string, ActualModelConfig>`，虚拟模型 draft 只持有有序 `models: ModelRef[]` 和 `pinned_model: ModelRef | null`。Providers 页面采用响应式卡片网格；卡片负责连接摘要、密钥状态、默认最多四个模型标签和可展开的剩余数量，Provider 设置与实际模型价格分别进入独立弹窗。点击模型标签直接编辑该模型，编辑时名称只读；改名必须走“新建、切换引用、删除旧模型”流程。
+
+配置加载、保存后重载和模式切换前刷新均从单次 `GET /api/config` 获取完整快照。Provider 与虚拟模型引用来自同一次读取，避免分开请求配置和模型时与并发写入交错。
 
 虚拟模型页通过按 Provider 分组的组合选择器引用已有实际模型，禁止自由输入、重复引用和引用不存在的目录项；没有更多可选目录项时禁用添加按钮，拖拽只改变数组顺序并保留原有过渡动画。选择器与卡片对长 Provider/模型名使用受约束宽度和省略展示，小屏下操作区重新排布，不改变结构化身份。
 
@@ -564,7 +579,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 | 调用记录 | 有界内存队列 + 单后台 writer | 观测存储故障不改变模型响应；队列满或 SQLite 故障时允许丢失记录 |
 | 配置热更新 | 原子写盘 + 运行时回滚 | 候选配置先完整验证；文件、Router、日志任一步失败都恢复旧状态 |
 | Provider 接口 | 统一 Anthropic 格式 | routing.py 不感知后端协议，OpenAI 适配器内部转换 |
-| 熔断策略 | Per-provider 三态 | 401/403 立即熔断，429/529/5xx 连续失败后熔断，60s 后半开探测 |
+| 熔断策略 | Per-provider 三态 | 401/403 立即熔断；5xx/瞬态传输错误连续失败后熔断；429/529 仅短冷却；600s 后单探测半开 |
 
 ---
 
@@ -576,8 +591,9 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 | 所有 provider 失败 | 502 + 聚合错误详情 |
 | 所有 provider 熔断 | 502 (无可用 provider) |
 | provider 返回 401/403 | 故障转移 + 立即熔断该 provider |
-| provider 连续返回 429/529/5xx | 故障转移 + 达阈值后熔断 |
-| 熔断 provider 恢复 | 60s 后半开探测，成功则关闭熔断器 |
+| provider 返回 429/529 | 故障转移 + 按 `Retry-After` 或默认值进入短冷却，不累计熔断 |
+| provider 连续返回 5xx 或发生瞬态传输错误 | 故障转移 + 达阈值后熔断 |
+| 熔断 provider 恢复 | 600s 后半开探测，成功则关闭熔断器 |
 | 环境变量未设置 | `serve` 可启动；路由时跳过对应 provider；`config validate` 严格失败 |
 | provider 返回非 JSON | 不可重试，立即返回 502 |
 | 流传输中断 | 关闭客户端连接，日志记录 |
@@ -599,7 +615,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 | 6 | monitoring.py (结构化日志) | 日志级别、request_id 串联 |
 | 7 | db.py (SQLite 调用记录) + api/metrics.py | 写入/查询调用记录 |
 | 8 | config.toml (示例配置) | - |
-| 9 | providers/openai_compat.py (协议转换，先非流式) | 请求/响应转换正确性 |
+| 9（规划） | providers/openai_compat.py (协议转换，先非流式) | 请求/响应转换正确性 |
 | 10 | dashboard/ (Vue 骨架) | 页面渲染、API 数据加载 |
 | 11 | 集成测试 + 端到端验证 | 启动 router → curl 测试 → Claude Code 配置测试 |
 

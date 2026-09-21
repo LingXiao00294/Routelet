@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from ipaddress import ip_address
 import shutil
 import sqlite3
 import sys
@@ -162,6 +163,11 @@ def serve_command(
         help="覆盖配置文件中的 server.port",
     ),
     db: str = typer.Option(DEFAULT_DB_PATH, "--db", help="调用记录数据库路径"),
+    allow_remote: bool = typer.Option(
+        False,
+        "--allow-remote",
+        help="允许监听非回环地址（服务无内置鉴权，仅限受信网络）",
+    ),
 ) -> int:
     """启动本地路由代理服务."""
     return command_serve(
@@ -172,6 +178,7 @@ def serve_command(
             host=host,
             port=port,
             db=db,
+            allow_remote=allow_remote,
         )
     )
 
@@ -204,6 +211,11 @@ def dashboard_command(
         "--log-level",
         help="dashboard 服务日志级别",
     ),
+    allow_remote: bool = typer.Option(
+        False,
+        "--allow-remote",
+        help="允许监听非回环地址（Dashboard 可访问敏感管理接口）",
+    ),
 ) -> int:
     """启动独立 dashboard 服务."""
     return command_dashboard(
@@ -213,6 +225,7 @@ def dashboard_command(
             router_url=router_url,
             dist=dist,
             log_level=log_level.value,
+            allow_remote=allow_remote,
         )
     )
 
@@ -245,6 +258,11 @@ def standalone_dashboard_command(
         "--log-level",
         help="dashboard 服务日志级别",
     ),
+    allow_remote: bool = typer.Option(
+        False,
+        "--allow-remote",
+        help="允许监听非回环地址（Dashboard 可访问敏感管理接口）",
+    ),
 ) -> int:
     """启动独立 dashboard 服务."""
     return command_dashboard(
@@ -254,6 +272,7 @@ def standalone_dashboard_command(
             router_url=router_url,
             dist=dist,
             log_level=log_level.value,
+            allow_remote=allow_remote,
         )
     )
 
@@ -506,6 +525,9 @@ def command_serve(args: SimpleNamespace) -> int:
     if args.port:
         config.server.port = args.port
 
+    if not _allow_bind(config.server.host, getattr(args, "allow_remote", False)):
+        return 2
+
     setup_logging(
         level=config.server.log_level,
         log_file=config.server.log_file,
@@ -538,6 +560,9 @@ def command_serve(args: SimpleNamespace) -> int:
 
 def command_dashboard(args: SimpleNamespace) -> int:
     """Start the standalone dashboard server."""
+    if not _allow_bind(args.host, getattr(args, "allow_remote", False)):
+        return 2
+
     dist = find_dashboard_dist(args.dist)
     if dist is None:
         print(
@@ -565,6 +590,41 @@ def command_dashboard(args: SimpleNamespace) -> int:
         log_config=None,
     )
     return 0
+
+
+def _allow_bind(host: str, allow_remote: bool) -> bool:
+    """Validate an unauthenticated service bind address.
+
+    Args:
+        host: Hostname or IP address that uvicorn will bind.
+        allow_remote: Whether the operator explicitly accepted remote exposure.
+
+    Returns:
+        ``True`` for loopback addresses or an explicitly allowed remote bind.
+        Otherwise prints an actionable error and returns ``False``.
+    """
+    normalized = host.strip().strip("[]").casefold()
+    is_loopback = normalized == "localhost"
+    if not is_loopback:
+        try:
+            is_loopback = ip_address(normalized).is_loopback
+        except ValueError:
+            is_loopback = False
+    if is_loopback:
+        return True
+
+    warning = (
+        f"监听地址 {host!r} 可被远程访问；服务没有内置鉴权，"
+        "会暴露调用正文、配置写入和上游调用能力"
+    )
+    if not allow_remote:
+        print(
+            f"错误: {warning}。如已部署外部鉴权，请显式添加 --allow-remote",
+            file=sys.stderr,
+        )
+        return False
+    print(f"警告: {warning}；请确保仅位于受信网络或鉴权反向代理之后", file=sys.stderr)
+    return True
 
 
 def command_config_init(args: SimpleNamespace) -> int:

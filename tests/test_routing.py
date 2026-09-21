@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import httpx
@@ -19,6 +20,38 @@ from agent_router.routing import (
     _check_stream_error,
 )
 from agent_router.providers.base import NonRetryableError, RetryableError
+
+
+def _reload_race_config(
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    max_concurrent: int = 0,
+    max_queue: int = 0,
+) -> AppConfig:
+    """Build a one-provider config for hot-reload routing race tests."""
+    return AppConfig(
+        server=ServerConfig(),
+        router=RouterConfig(mode="failover"),
+        models={
+            "m": VirtualModelConfig(
+                providers=[
+                    ProviderConfig(
+                        type="anthropic",
+                        name="p1",
+                        model=model,
+                        api_key=api_key,
+                        base_url=base_url,
+                        priority=1,
+                        max_concurrent=max_concurrent,
+                        max_queue=max_queue,
+                        queue_wait_timeout=1.0,
+                    )
+                ]
+            )
+        },
+    )
 
 
 class TestRouterModelLookup:
@@ -99,6 +132,126 @@ class TestRouterModelLookup:
             await router._get_providers("m")
 
         assert "api_key 环境变量未设置或未正确插值" in str(exc.value)
+
+
+class TestRouterHotReload:
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_reload_before_attempt_uses_current_provider_config(
+        self, monkeypatch, stream
+    ):
+        """Do not send a request with a Provider snapshot replaced before I/O."""
+        requests: list[tuple[str, str | None, str]] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            requests.append(
+                (
+                    str(request.url),
+                    request.headers.get("authorization"),
+                    body["model"],
+                )
+            )
+            if body.get("stream"):
+                return httpx.Response(
+                    200,
+                    content=(
+                        b'event: message_start\ndata: {"type":"message_start"}\n\n'
+                    ),
+                )
+            return httpx.Response(200, json={"model": body["model"]})
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            router = Router(
+                _reload_race_config(
+                    base_url="https://old.test", api_key="old-key", model="old-model"
+                ),
+                client,
+            )
+            attempt_ready = asyncio.Event()
+            continue_attempt = asyncio.Event()
+            original_try_acquire = router.circuit_breaker.try_acquire
+
+            async def pause_first_attempt(*args, **kwargs):
+                if not attempt_ready.is_set():
+                    attempt_ready.set()
+                    await continue_attempt.wait()
+                return await original_try_acquire(*args, **kwargs)
+
+            monkeypatch.setattr(
+                router.circuit_breaker, "try_acquire", pause_first_attempt
+            )
+
+            async def route():
+                body = {"model": "m", "messages": [], "stream": stream}
+                if not stream:
+                    return await router.route_non_stream(body)
+                return b"".join([chunk async for chunk in router.route_stream(body)])
+
+            task = asyncio.create_task(route())
+            await asyncio.wait_for(attempt_ready.wait(), timeout=1.0)
+            await router.reload_config(
+                _reload_race_config(
+                    base_url="https://new.test", api_key="new-key", model="new-model"
+                )
+            )
+            continue_attempt.set()
+            await asyncio.wait_for(task, timeout=1.0)
+
+        assert requests == [
+            ("https://new.test/v1/messages", "Bearer new-key", "new-model")
+        ]
+
+    async def test_reload_transparently_reroutes_queued_attempt(self):
+        """Treat a stale queue wakeup as reconfiguration, not capacity loss."""
+        requests: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(str(request.url))
+            return httpx.Response(200, json={"ok": True})
+
+        old_config = _reload_race_config(
+            base_url="https://old.test",
+            api_key="old-key",
+            model="old-model",
+            max_concurrent=1,
+            max_queue=1,
+        )
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            router = Router(old_config, client)
+            holder_entered = asyncio.Event()
+            release_holder = asyncio.Event()
+            old_provider = old_config.models["m"].providers[0]
+
+            async def hold_slot():
+                async with router.provider_gate.slot(old_provider):
+                    holder_entered.set()
+                    await release_holder.wait()
+
+            holder = asyncio.create_task(hold_slot())
+            await holder_entered.wait()
+            route = asyncio.create_task(
+                router.route_non_stream({"model": "m", "messages": []})
+            )
+            async with asyncio.timeout(1.0):
+                while router.provider_gate.snapshot()["p1"]["waiting"] != 1:
+                    await asyncio.sleep(0)
+
+            await router.reload_config(
+                _reload_race_config(
+                    base_url="https://new.test",
+                    api_key="new-key",
+                    model="new-model",
+                    max_concurrent=1,
+                    max_queue=1,
+                )
+            )
+            release_holder.set()
+            await asyncio.wait_for(holder, timeout=1.0)
+            assert await asyncio.wait_for(route, timeout=1.0) == {"ok": True}
+
+        assert requests == ["https://new.test/v1/messages"]
 
 
 class TestAllProvidersFailedError:
@@ -473,6 +626,67 @@ class TestRateLimitRouting:
             assert calls["n"] == 2
             assert b"message_start" in b"".join(chunks)
 
+    async def test_long_stream_error_split_across_chunks_is_not_lost(self, http_client):
+        """An event header must survive while a long split payload is incomplete."""
+        calls = {"n": 0}
+        error_prefix = (
+            b'event: error\ndata: {"type":"error","error":'
+            b'{"type":"api_error","message":"' + b"x" * 9000
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if "p1" in str(request.url):
+
+                async def body():
+                    yield error_prefix
+                    yield b'"}}\n\n'
+
+                return httpx.Response(200, content=body())
+            return httpx.Response(
+                200,
+                content=b'event: message_start\ndata: {"type":"message_start"}\n\n',
+            )
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as client:
+            config = AppConfig(
+                server=ServerConfig(),
+                router=RouterConfig(mode="failover"),
+                models={
+                    "m": VirtualModelConfig(
+                        providers=[
+                            ProviderConfig(
+                                type="anthropic",
+                                name="p1",
+                                model="m1",
+                                api_key="k1",
+                                base_url="https://p1.test",
+                                priority=1,
+                            ),
+                            ProviderConfig(
+                                type="anthropic",
+                                name="p2",
+                                model="m2",
+                                api_key="k2",
+                                base_url="https://p2.test",
+                                priority=2,
+                            ),
+                        ]
+                    )
+                },
+            )
+            router = Router(config, client)
+            chunks: list[bytes] = []
+            async for chunk in router.route_stream(
+                {"model": "m", "max_tokens": 10, "messages": [], "stream": True}
+            ):
+                chunks.append(chunk)
+
+        assert calls["n"] == 2
+        assert b"message_start" in b"".join(chunks)
+        assert b"event: error" not in b"".join(chunks)
+
     async def test_stream_error_before_yield_allows_failover(self, http_client):
         """首包即为 event:error 时不应先发给客户端，应可 failover."""
         calls = {"n": 0}
@@ -528,3 +742,96 @@ class TestRateLimitRouting:
             assert chunks
             assert b"message_start" in chunks[0]
             assert b"event: error" not in b"".join(chunks)
+
+
+@pytest.mark.parametrize("split", [1, 12, 40, -1])
+@pytest.mark.parametrize("started", [False, True])
+async def test_split_stream_error_never_leaks_partial_event(
+    sample_config, split, started
+):
+    """Retry initial errors, but preserve the chosen stream after useful output."""
+    first_event = b'event: message_start\ndata: {"type":"message_start"}\n\n'
+    error_event = (
+        b'event: error\ndata: {"type":"error","error":'
+        b'{"type":"api_error","message":"busy"}}\n\n'
+    )
+    calls: list[str] = []
+
+    async def body():
+        yield b": keepalive\n\n"
+        if started:
+            yield first_event
+        yield error_event[:split]
+        yield error_event[split:]
+
+    def handler(request):
+        calls.append(request.url.host)
+        if len(calls) == 1:
+            return httpx.Response(200, content=body())
+        return httpx.Response(200, content=first_event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        chunks: list[bytes] = []
+
+        async def consume():
+            async for chunk in router.route_stream({"model": "haiku-router"}):
+                chunks.append(chunk)
+
+        if started:
+            with pytest.raises(RetryableError, match="busy"):
+                await consume()
+        else:
+            await consume()
+
+    assert len(calls) == (1 if started else 2)
+    assert b"".join(chunks) == first_event
+
+
+async def test_combined_stream_events_commit_before_later_error(sample_config):
+    """Respect event order when a data event and an error share a network chunk."""
+    first_event = b"event: message_start\ndata: {}\n\n"
+    error_event = b'event: error\ndata: {"error":{"type":"api_error"}}\n\n'
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=first_event + error_event)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        chunks: list[bytes] = []
+        with pytest.raises(RetryableError):
+            async for chunk in router.route_stream({"model": "haiku-router"}):
+                chunks.append(chunk)
+
+    assert calls == 1
+    assert chunks == [first_event]
+
+
+async def test_bom_prefixed_stream_error_allows_failover(sample_config):
+    """Recognize an initial error even with a split UTF-8 stream signature."""
+    failed = b'\xef\xbb\xbfevent: error\ndata: {"error":{"type":"api_error"}}\n\n'
+    success = b'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    calls = 0
+
+    async def failed_body():
+        for byte in failed:
+            yield bytes((byte,))
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, content=failed_body() if calls == 1 else success)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        router = Router(sample_config, client)
+        outcome = {}
+        chunks = [
+            chunk
+            async for chunk in router.route_stream({"model": "haiku-router"}, outcome)
+        ]
+
+    assert calls == outcome["attempt"] == 2
+    assert chunks == [success]

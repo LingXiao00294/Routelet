@@ -78,6 +78,71 @@ async def test_dashboard_proxies_router_api(tmp_path, httpx_mock):
 
 
 @pytest.mark.asyncio
+async def test_dashboard_proxy_strips_connection_nominated_headers(
+    tmp_path, httpx_mock
+):
+    dist = _create_dist(tmp_path)
+    httpx_mock.add_response(
+        method="GET",
+        url="http://router.local/api/metrics/summary",
+        json={"total_calls": 0},
+        headers={
+            "Connection": "x-router-only",
+            "X-Router-Only": "response-secret",
+        },
+    )
+    app = create_dashboard_app(dist, router_base_url="http://router.local")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/api/metrics/summary",
+            headers={
+                "Connection": "keep-alive, x-dashboard-only",
+                "X-Dashboard-Only": "request-secret",
+            },
+        )
+
+    upstream_request = httpx_mock.get_request()
+    assert upstream_request is not None
+    assert upstream_request.headers.get("connection") != "keep-alive, x-dashboard-only"
+    assert "x-dashboard-only" not in upstream_request.headers
+    assert "connection" not in response.headers
+    assert "x-router-only" not in response.headers
+
+
+@pytest.mark.asyncio
+async def test_dashboard_rejects_chunked_body_over_limit(tmp_path, monkeypatch):
+    dist = _create_dist(tmp_path)
+    monkeypatch.setattr(dashboard_module, "_MAX_PROXY_BODY_BYTES", 8)
+
+    class FakeRouterClient:
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        async def request(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("oversized body must not reach the router")
+
+        async def aclose(self) -> None:
+            pass
+
+    async def oversized_body():
+        yield b'{"model"'
+        yield b':"router"}'
+
+    monkeypatch.setattr(dashboard_module.httpx, "AsyncClient", FakeRouterClient)
+    app = create_dashboard_app(dist, router_base_url="http://router.local")
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/v1/messages", content=oversized_body())
+
+    assert response.status_code == 413
+    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert "8 字节" in response.json()["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_dashboard_proxy_strips_decoded_content_encoding(tmp_path, monkeypatch):
     dist = _create_dist(tmp_path)
     seen: dict[str, object] = {}

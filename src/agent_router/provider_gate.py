@@ -46,6 +46,9 @@ class _GateState:
     in_flight: int = 0
     waiting: int = 0
     cooldown_until: float = 0.0
+    configured: bool = False
+    active: bool = True
+    generation: int = 0
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
 
 
@@ -80,23 +83,31 @@ class ProviderGate:
         loop.create_task(_do())
 
     def configure(self, providers: list[ProviderConfig]) -> None:
-        """根据配置更新各 provider 的限流参数（热重载友好）."""
+        """Apply authoritative limits and invalidate obsolete queued attempts.
+
+        Calls that already own a slot may finish. Waiting calls are awakened
+        whenever their Provider configuration changes and must re-enter routing
+        instead of invoking an updated or removed Provider with stale settings.
+
+        Args:
+            providers: Complete active Provider set from the new configuration.
+        """
         seen: set[str] = set()
         for p in providers:
             seen.add(p.name)
             state = self._get(p.name)
-            old_limit = state.max_concurrent
             self._apply_limits(state, p)
-            # 放宽/取消并发限制时唤醒排队中的 waiter
-            if p.max_concurrent == 0 or (
-                old_limit > 0 and p.max_concurrent > old_limit
-            ):
+            state.configured = True
+            state.active = True
+            state.generation += 1
+            if state.waiting:
                 self._schedule_notify(state)
 
         for name, state in self._states.items():
-            if name not in seen:
-                state.max_concurrent = 0
-                state.max_queue = 0
+            if name not in seen and state.active:
+                state.configured = True
+                state.active = False
+                state.generation += 1
                 self._schedule_notify(state)
 
     def configure_from_models(self, models: dict[str, VirtualModelConfig]) -> None:
@@ -157,21 +168,52 @@ class ProviderGate:
     def _has_slot(self, state: _GateState) -> bool:
         return state.max_concurrent <= 0 or state.in_flight < state.max_concurrent
 
-    def _ready_or_cooling(self, name: str, state: _GateState) -> bool:
-        """排队唤醒条件：有空位，或已进入冷却（需退出队列）."""
-        return self._has_slot(state) or self.cooldown_remaining(name) > 0
+    def _ready_or_cooling(self, name: str, state: _GateState, generation: int) -> bool:
+        """Return whether a waiter must acquire, cool down, or leave its generation."""
+        return (
+            state.generation != generation
+            or not state.active
+            or self._has_slot(state)
+            or self.cooldown_remaining(name) > 0
+        )
+
+    def _raise_if_stale(self, name: str, state: _GateState, generation: int) -> None:
+        """Reject a queued attempt invalidated by Provider reconfiguration."""
+        if state.generation != generation or not state.active:
+            raise ProviderCapacityError(
+                name,
+                f"provider '{name}' 配置已更新或移除，请重新路由",
+                retry_after=0.0,
+            )
 
     @asynccontextmanager
     async def slot(self, provider: ProviderConfig) -> AsyncIterator[None]:
-        """占用一个并发槽位；必要时排队等待.
+        """Acquire one concurrency slot, queueing only within one config generation.
 
-        若处于冷却、队列已满或等待超时，抛出对应异常。
+        Providers used outside a configured Router initialize their limits on
+        first use. Once :meth:`configure` has established authoritative state,
+        request-local snapshots cannot overwrite it.
+
+        Args:
+            provider: Provider snapshot associated with the routing attempt.
+
+        Yields:
+            Control while one Provider concurrency slot is held.
+
+        Raises:
+            ProviderCooldownError: If the Provider is in short cooldown.
+            ProviderCapacityError: If capacity is unavailable, waiting times
+                out, or hot reload invalidates the queued attempt.
         """
         name = provider.name
         state = self._get(name)
 
         async with state.condition:
-            self._apply_limits(state, provider)
+            if not state.configured:
+                self._apply_limits(state, provider)
+                state.configured = True
+            self._raise_if_stale(name, state, state.generation)
+            generation = state.generation
 
             remaining = self.cooldown_remaining(name)
             if remaining > 0:
@@ -197,7 +239,7 @@ class ProviderGate:
                 try:
                     await asyncio.wait_for(
                         state.condition.wait_for(
-                            lambda: self._ready_or_cooling(name, state)
+                            lambda: self._ready_or_cooling(name, state, generation)
                         ),
                         timeout=wait_timeout,
                     )
@@ -212,6 +254,7 @@ class ProviderGate:
                     state.waiting = max(0, state.waiting - 1)
 
                 # 唤醒后重新检查冷却（持有 slot 的请求可能刚触发 429）
+                self._raise_if_stale(name, state, generation)
                 remaining = self.cooldown_remaining(name)
                 if remaining > 0:
                     raise ProviderCooldownError(name, remaining)

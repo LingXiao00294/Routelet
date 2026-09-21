@@ -9,7 +9,7 @@ from typing import Any
 
 import structlog
 from structlog.contextvars import merge_contextvars
-from structlog.dev import ConsoleRenderer
+from structlog.dev import ConsoleRenderer, plain_traceback
 from structlog.processors import (
     JSONRenderer,
     StackInfoRenderer,
@@ -180,7 +180,10 @@ def setup_logging(
     stdout_processors = [
         ProcessorFormatter.remove_processors_meta,
         _brief_stdout_filter,
-        ConsoleRenderer(colors=True),
+        # Rich's default renderer includes frame locals, which can contain
+        # upstream Authorization/x-api-key headers. Plain tracebacks retain
+        # stack context without bypassing the structured-field redactor.
+        ConsoleRenderer(colors=True, exception_formatter=plain_traceback),
     ]
     json_processors = [
         ProcessorFormatter.remove_processors_meta,

@@ -26,6 +26,16 @@ useOverlayChrome(overlayActive, drawerRef);
 
 const failover = computed(() => parseFailover(props.record?.failover_details ?? null));
 
+const providerLabel = computed(() => {
+  const record = props.record;
+  if (!record) return "—";
+  if (record.provider_name) {
+    return `${record.provider_name} (${record.provider_type || "—"})`;
+  }
+  if (record.attempt === 0) return "未发起上游请求";
+  return failover.value.length ? "未命中（见 Failover 链）" : "未记录最终 Provider";
+});
+
 function onKey(e: KeyboardEvent) {
   if (e.key === "Escape") {
     e.preventDefault();
@@ -61,10 +71,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKey));
           <section class="meta">
             <div><span class="k">时间</span><span class="mono">{{ formatTime(record.timestamp) }}</span></div>
             <div><span class="k">虚拟模型</span><span class="mono">{{ record.virtual_model }}</span></div>
-            <div><span class="k">Provider</span><span class="mono">{{ record.provider_name || "—" }} ({{ record.provider_type || "—" }})</span></div>
+            <div><span class="k">Provider</span><span class="mono">{{ providerLabel }}</span></div>
             <div><span class="k">真实模型</span><span class="mono">{{ formatActualModel(record.provider_name, record.provider_model) }}</span></div>
             <div><span class="k">URL</span><span class="mono wrap">{{ record.provider_url || "—" }}</span></div>
-            <div><span class="k">Attempt</span><span class="mono">{{ record.attempt }}</span></div>
+            <div><span class="k">Attempt</span><span class="mono">{{ record.attempt > 0 ? record.attempt : "未发起" }}</span></div>
             <div><span class="k">状态</span>
               <span class="badge" :class="record.status === 'success' ? 'badge-success' : 'badge-danger'">
                 {{ record.status }}

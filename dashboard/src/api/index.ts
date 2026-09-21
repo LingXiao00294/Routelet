@@ -2,8 +2,8 @@ import { request } from "./client";
 import type {
   ApiOk,
   AppConfig,
+  CallDetail,
   CallsPage,
-  CallRecord,
   CircuitBreakerMap,
   DailyStat,
   HealthResponse,
@@ -62,7 +62,7 @@ export function getCalls(params: {
 }
 
 export function getCall(id: string) {
-  return request<CallRecord>(`/api/calls/${encodeURIComponent(id)}`);
+  return request<CallDetail>(`/api/calls/${encodeURIComponent(id)}`);
 }
 
 export function getConfig() {

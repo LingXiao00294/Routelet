@@ -5,7 +5,7 @@ import { useConfigStore } from "@/stores/config";
 import { useConfirm } from "@/composables/useConfirm";
 import { useOverlayChrome } from "@/composables/useOverlayChrome";
 import { useToast } from "@/composables/useToast";
-import type { ActualModelConfig, ProviderConfig, ProviderType } from "@/api/types";
+import type { ActualModelConfig, ProviderConfig } from "@/api/types";
 import { isBlankOrPlaceholderKey } from "@/utils/configPayload";
 import { formatActualModel } from "@/utils/format";
 import { summarizeProviderModels } from "@/utils/providerPresentation";
@@ -333,16 +333,9 @@ onUnmounted(() => window.removeEventListener("keydown", onModalKey));
 
           <div class="grid">
             <div class="field">
-              <label>type</label>
-              <select v-model="editingProvider.type">
-                <option
-                  v-for="t in (['anthropic', 'openai'] as ProviderType[])"
-                  :key="t"
-                  :value="t"
-                >
-                  {{ t }}
-                </option>
-              </select>
+              <label for="provider-type">type</label>
+              <input id="provider-type" :value="editingProvider.type" readonly />
+              <span class="field-hint">当前仅支持 Anthropic Messages API 兼容 Provider</span>
             </div>
             <div class="field">
               <label>api_key（留空保留原值）</label>
@@ -662,6 +655,11 @@ onUnmounted(() => window.removeEventListener("keydown", onModalKey));
 .err {
   color: var(--danger);
   font-size: 0.78rem;
+}
+
+.field-hint {
+  color: var(--text-muted);
+  font-size: 0.75rem;
 }
 
 .overlay {

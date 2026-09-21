@@ -20,33 +20,43 @@ const refresh = useRefreshStore();
 const route = useRoute();
 const router = useRouter();
 const { tick } = storeToRefs(refresh);
+let silentRefreshRunning = false;
 
 async function bootstrap() {
   app.initTheme();
-  await Promise.all([
-    app.checkHealth(),
-    app.loadConfig(true),
-    app.loadCircuit(true),
-  ]);
+  if (await app.loadInitialState()) {
+    toast.error("初始数据加载失败，数据可能过期");
+  }
 }
 
 async function silentRefresh() {
-  let failed = false;
+  if (silentRefreshRunning) return;
+  silentRefreshRunning = true;
   try {
-    await Promise.all([app.checkHealth(), app.loadCircuit(true)]);
-  } catch {
-    failed = true;
-  }
-  if (app.healthy === false) failed = true;
-  if (await refresh.runHandlers()) failed = true;
-
-  if (failed) {
-    if (!app.staleData) {
-      toast.error("自动刷新失败，数据可能过期");
+    let failed = false;
+    try {
+      const [, configOk, circuitOk] = await Promise.all([
+        app.checkHealth(),
+        app.loadConfig(true),
+        app.loadCircuit(true),
+      ]);
+      if (!configOk || !circuitOk) failed = true;
+    } catch {
+      failed = true;
     }
-    app.staleData = true;
-  } else {
-    app.staleData = false;
+    if (app.healthy === false) failed = true;
+    if (await refresh.runHandlers()) failed = true;
+
+    if (failed) {
+      if (!app.staleData) {
+        toast.error("自动刷新失败，数据可能过期");
+      }
+      app.staleData = true;
+    } else {
+      app.staleData = false;
+    }
+  } finally {
+    silentRefreshRunning = false;
   }
 }
 
@@ -65,11 +75,17 @@ function onKey(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
     if (route.path.startsWith("/config") && config.dirty) {
       e.preventDefault();
+      if (config.saving) return;
       void config
         .save()
-        .then(async () => {
-          await app.loadConfig(true);
-          toast.success("已刷新");
+        .then(async (editorConfigOk) => {
+          const appConfigOk = await app.loadConfig(true);
+          if (editorConfigOk && appConfigOk) {
+            toast.success("已保存");
+          } else {
+            app.staleData = true;
+            toast.push("配置已保存，但重新加载失败，数据可能过期", "info");
+          }
         })
         .catch((err: Error) => toast.error(err.message));
     }

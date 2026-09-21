@@ -9,7 +9,12 @@ from typing import Unpack
 import structlog
 from structlog.contextvars import get_contextvars
 
-from agent_router.db import CallRecordPayload, CallStore
+from agent_router.db import (
+    CallRecordPayload,
+    CallStore,
+    _estimate_request_tokens,
+    _serialize_call_body,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -72,10 +77,6 @@ class CallRecorder:
         virtual_model = record.get("virtual_model")
         status = record.get("status")
         request_id = get_contextvars().get("request_id")
-        queued_record = _QueuedCallRecord(
-            payload=record,
-            request_id=request_id if isinstance(request_id, str) else None,
-        )
         if not self._accepting or self._worker is None or self._worker.done():
             logger.error(
                 "call_record.unavailable",
@@ -83,6 +84,28 @@ class CallRecorder:
                 status=status,
             )
             return False
+        if self._queue.full():
+            logger.warning(
+                "call_record.dropped",
+                virtual_model=virtual_model,
+                status=status,
+                queue_size=self._queue.maxsize,
+            )
+            return False
+        try:
+            payload = _prepare_payload_for_queue(record)
+        except Exception:
+            logger.error(
+                "call_record.serialization_failed",
+                virtual_model=virtual_model,
+                status=status,
+                exc_info=True,
+            )
+            return False
+        queued_record = _QueuedCallRecord(
+            payload=payload,
+            request_id=request_id if isinstance(request_id, str) else None,
+        )
         try:
             self._queue.put_nowait(queued_record)
         except asyncio.QueueFull:
@@ -180,3 +203,19 @@ class CallRecorder:
                 reason="shutdown_timeout",
                 dropped=dropped,
             )
+
+
+def _prepare_payload_for_queue(record: CallRecordPayload) -> CallRecordPayload:
+    """Serialize and bound large bodies before they enter the recorder queue.
+
+    Request token estimation runs against the complete parsed body before it is
+    replaced by a bounded JSON preview, preserving metrics without retaining a
+    potentially 50 MiB object for the lifetime of a slow SQLite queue.
+    """
+    payload = record.copy()
+    request_body = payload.get("request_body")
+    if payload.get("request_tokens") is None and isinstance(request_body, dict):
+        payload["request_tokens"] = _estimate_request_tokens(request_body)
+    payload["request_body"] = _serialize_call_body(request_body)
+    payload["response_body"] = _serialize_call_body(payload.get("response_body"))
+    return payload

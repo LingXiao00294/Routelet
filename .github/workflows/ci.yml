@@ -5,20 +5,27 @@ on:
     branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   python:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@v6
         with:
-          python-version: "3.14"
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: uv sync --frozen
-      # ruff / ty 暂未加入：仓库存在既有告警（unused imports / NoneGuard），
-      # 待清理后启用。pytest 已全绿，作为后端质量门禁。
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+      - run: uv run ty check src tests
       - run: uv run pytest
 
   dashboard:
@@ -29,9 +36,10 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.14
       - run: bun install --frozen-lockfile
         working-directory: dashboard
-      # build 脚本含 vue-tsc 类型检查，作为前端质量门禁
+      - run: bun test
+        working-directory: dashboard
       - run: bun run build
         working-directory: dashboard

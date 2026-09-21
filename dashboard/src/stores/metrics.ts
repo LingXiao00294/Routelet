@@ -21,30 +21,48 @@ export const useMetricsStore = defineStore("metrics", () => {
   const loading = ref(false);
   const error = ref<string | null>(null);
   const loadedOnce = ref(false);
+  let refreshSeq = 0;
+  let refreshRequest: { days: number; promise: Promise<void> } | null = null;
 
   async function refresh(silent = false) {
     if (!silent) loading.value = true;
-    error.value = null;
+    const d = days.value;
+    if (!refreshRequest || refreshRequest.days !== d) {
+      const seq = ++refreshSeq;
+      error.value = null;
+      const promise = (async () => {
+        try {
+          const [s, real, virt, prov, dayRows] = await Promise.all([
+            api.getSummary(),
+            api.getByRealModel(),
+            api.getByModel(),
+            api.getByProvider(),
+            api.getDaily(d),
+          ]);
+          if (seq !== refreshSeq) return;
+          summary.value = s;
+          byRealModel.value = real;
+          byModel.value = virt;
+          byProvider.value = prov;
+          daily.value = fillDailyGaps(dayRows, d);
+          loadedOnce.value = true;
+        } catch (err) {
+          if (seq !== refreshSeq) return;
+          error.value = err instanceof Error ? err.message : "加载指标失败";
+          throw err;
+        } finally {
+          if (seq === refreshSeq) {
+            loading.value = false;
+            refreshRequest = null;
+          }
+        }
+      })();
+      refreshRequest = { days: d, promise };
+    }
     try {
-      const d = days.value;
-      const [s, real, virt, prov, dayRows] = await Promise.all([
-        api.getSummary(),
-        api.getByRealModel(),
-        api.getByModel(),
-        api.getByProvider(),
-        api.getDaily(d),
-      ]);
-      summary.value = s;
-      byRealModel.value = real;
-      byModel.value = virt;
-      byProvider.value = prov;
-      daily.value = fillDailyGaps(dayRows, d);
-      loadedOnce.value = true;
+      await refreshRequest.promise;
     } catch (err) {
-      error.value = err instanceof Error ? err.message : "加载指标失败";
       if (!silent) throw err;
-    } finally {
-      loading.value = false;
     }
   }
 
