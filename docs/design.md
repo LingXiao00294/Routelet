@@ -6,7 +6,7 @@
 
 > 当前实现状态：仅支持 Anthropic Messages API 兼容 Provider。本文中的 OpenAI 协议转换属于后续路线图，当前配置会在加载阶段拒绝 `type = "openai"`。
 
-```
+``` text
 Claude Code → router (本地 FastAPI) → Anthropic API   (优先级 1)
                                     → 智谱 API       (优先级 2, 故障转移)
                                     → OpenAI API      (规划中，当前不可配置)
@@ -16,7 +16,7 @@ Claude Code → router (本地 FastAPI) → Anthropic API   (优先级 1)
 
 ## 项目结构
 
-```
+``` text
 agent-router/
 ├── pyproject.toml                  # 项目元数据 + 依赖
 ├── config.toml                     # 路由配置 (用户编辑)
@@ -67,7 +67,7 @@ agent-router/
 ## 依赖
 
 | 依赖 | 用途 |
-|---|---|
+| --- | --- |
 | `fastapi` | 异步 HTTP 框架，原生 SSE StreamingResponse |
 | `uvicorn[standard]` | ASGI 服务器 (uvloop + httptools) |
 | `httpx` | 异步 HTTP 客户端，连接池复用，流式支持 |
@@ -140,6 +140,7 @@ models = [
 ### 1. config.py — 配置加载
 
 **职责：**
+
 - 使用 `tomllib` 加载 TOML 配置文件
 - `os.path.expandvars()` 对 `api_key` 等字段做 `${ENV_VAR}` 插值
 - Pydantic 校验结构完整性
@@ -204,6 +205,7 @@ class AppConfig(BaseModel):
 ### 2. routing.py — 路由引擎
 
 **职责：**
+
 - 接收虚拟模型名 + Anthropic 请求体
 - 按 priority 顺序遍历 provider 链
 - 每次尝试：调用 provider → 成功则返回 → 失败则判断是否重试
@@ -212,7 +214,7 @@ class AppConfig(BaseModel):
 **错误分类：**
 
 | 错误 | 是否重试 | 熔断 | 说明 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | HTTP 401 | ✅ 故障转移 | 🔴 立即熔断 | 认证失败；恢复超时后半开探测 |
 | HTTP 403 | ✅ 故障转移 | 🔴 立即熔断 | 权限不足；恢复超时后半开探测 |
 | HTTP 429 | ✅ 故障转移 | ❌（短冷却） | 按 `Retry-After` 或默认值暂时跳过 |
@@ -231,7 +233,7 @@ Per-provider 熔断器，防止持续向故障 provider 发送请求。
 
 **状态机：**
 
-```
+``` text
 CLOSED ──(连续失败达阈值)──→ OPEN
   ↑                            │
   │                            └──(recovery_timeout 后)──→ HALF_OPEN
@@ -245,10 +247,12 @@ HALF_OPEN ──(探测失败)──→ OPEN
 - **HALF_OPEN**: 半开状态，允许一次探测请求
 
 **参数：**
+
 - `failure_threshold` (默认 5): 连续失败次数阈值，达到后熔断
 - `recovery_timeout` (默认 600s / 10 分钟): 熔断后等待恢复的时间
 
 **熔断触发策略：**
+
 - 401/403 (认证/权限错误) → 立即熔断，恢复超时后进入半开探测
 - 429/529 (限流/过载) → 进入 Provider 短冷却，不累计熔断失败次数
 - 5xx 与瞬态连接/超时错误 → 连续失败达阈值后熔断
@@ -275,6 +279,7 @@ class BaseProvider(ABC):
 #### anthropic_compat.py — 直通适配器
 
 最简单的适配器：
+
 - 替换请求中的 `model` 为真实模型名
 - 设置 `x-api-key` header
 - **非流式**: `POST {base_url}/v1/messages` → 返回 JSON
@@ -289,7 +294,7 @@ Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 **请求转换 (Anthropic → OpenAI)：**
 
 | Anthropic 字段 | OpenAI 字段 | 转换逻辑 |
-|---|---|---|
+| --- | --- | --- |
 | `model` | `model` | 替换为真实 OpenAI 模型名 |
 | `system` (string/array) | `messages[0]` | 插入 `{"role": "system", "content": ...}` |
 | `messages[].role` | `messages[].role` | 直接映射 (user/assistant) |
@@ -303,7 +308,7 @@ Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 **响应转换 (OpenAI → Anthropic)：**
 
 | OpenAI 字段 | Anthropic 字段 | 转换逻辑 |
-|---|---|---|
+| --- | --- | --- |
 | `choices[0].message.content` | `content[]` | 字符串 → `[{"type":"text","text":"..."}]` |
 | `choices[0].message.tool_calls[]` | `content[]` | 每个 tool_call → `{"type":"tool_use","id":...,"name":...,"input":...}` |
 | `choices[0].finish_reason` | `stop_reason` | `"stop"`→`"end_turn"`, `"tool_calls"`→`"tool_use"`, `"length"`→`"max_tokens"` |
@@ -313,7 +318,8 @@ Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 **流式 SSE 转换：**
 
 OpenAI 流式格式：
-```
+
+``` text
 data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0}]}
 data: {"object":"chat.completion.chunk","choices":[{"delta":{"content":"Hello"},"index":0}]}
 data: {"object":"chat.completion.chunk","choices":[{"finish_reason":"stop"},"index":0}]}
@@ -321,7 +327,8 @@ data: [DONE]
 ```
 
 Anthropic 流式格式：
-```
+
+``` text
 event: message_start
 data: {"type":"message_start","message":{"id":"...","model":"...","content":[],"role":"assistant",...}}
 
@@ -348,7 +355,7 @@ data: {"type":"message_stop"}
 **端点：**
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `GET` | `/health` | 健康检查，返回 `{"status":"ok"}` |
 | `GET` | `/v1/models` | 返回虚拟模型列表，Anthropic List Models 格式 |
 | `POST` | `/v1/messages` | 主聊天端点 |
@@ -356,7 +363,7 @@ data: {"type":"message_stop"}
 
 **`POST /v1/messages` 处理流程：**
 
-1. Router 与独立 Dashboard 代理都以 50 MiB 上限有界读取请求体（包括 chunked 请求），Router 随后解析 JSON，并校验 `model` 为非空字符串、`stream`（若提供）为布尔值
+1. Router 以 50 MiB 上限有界读取请求体（包括 chunked 请求），随后解析 JSON，并校验 `model` 为非空字符串、`stream`（若提供）为布尔值
 2. 提取 `model` 字段，并把 `anthropic-version` / `anthropic-beta` 作为仅供 Provider 使用的内部元数据 → 查找虚拟模型对应的 provider 链
 3. 未找到 → 返回 400 + 已知模型列表
 4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；完整 SSE 事件逐个校验后才转发，首个有效事件前允许故障转移，初始注释和跨数据块的半个事件不锁定 Provider；无论正常结束、发送失败还是取消都主动关闭内层流
@@ -377,23 +384,16 @@ data: {"type":"message_stop"}
 }
 ```
 
-### 6. main.py — 入口
+### 6. main.py + cli/ — 单一启动入口
 
-```python
-def main():
-    parser = argparse.ArgumentParser(description="Agent Router - LLM API 路由代理")
-    parser.add_argument("--config", "-c", default="config.toml", help="配置文件路径")
-    parser.add_argument("--host", default=None, help="覆盖 server.host")
-    parser.add_argument("--port", "-p", type=int, default=None, help="覆盖 server.port")
-    args = parser.parse_args()
+`agent-router`、`python -m agent_router.main` 与 `python -m agent_router.cli` 均调用同一个启动入口；不再注册管理子命令或 `agent-router-dashboard`。`run` 返回整数退出码，进程入口 `main` 抛出 `SystemExit`。
 
-    config = load_config(args.config)
-    if args.host: config.server.host = args.host
-    if args.port: config.server.port = args.port
+- `cli/app.py` 使用标准库 argparse 解析配置、数据库、监听地址、静态文件和浏览器选项。
+- `cli/config_io.py` 在首次运行时以排他写入方式创建空配置，不覆盖已有文件；加载 `.env`，校验配置，允许尚未解析的 Provider 密钥。
+- `cli/server.py` 创建 Router 应用，在所有 API 路由之后挂载 Dashboard，使用单个 Uvicorn 服务监听同一端口。只有监听成功后才打开浏览器，`--no-browser` 可禁用；打开失败仅提示 URL，不中止服务。
+- `dashboard.py` 使用 StaticFiles 提供构建资源，为前端历史路由返回 `index.html`。未知 API 和缺失资源仍返回 404，不会返回 SPA 页面，也不会读取静态目录外的文件。
 
-    app = create_app(config)
-    uvicorn.run(app, host=config.server.host, port=config.server.port)
-```
+配置、统计、调用记录、Provider 与模型通过页面和现有 API 管理。程序启动前检查前端资源，缺失时给出构建提示并退出。原有应用 lifespan 仍负责初始化与关闭数据库、记录队列和上游连接，Ctrl+C 统一停止服务。
 
 ### 7. recording.py + db.py — 调用记录持久化
 
@@ -469,7 +469,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 为 dashboard 提供数据查询接口：
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
+| --- | --- | --- |
 | `GET` | `/api/metrics/summary` | 概览统计 (总调用数、成功率、总 token、总费用) |
 | `GET` | `/api/metrics/by-model` | 按虚拟模型分组统计 |
 | `GET` | `/api/metrics/by-real-model` | 按 `(provider_name, provider_model)` 复合分组，返回独立 `provider`、`model` 字段 |
@@ -482,7 +482,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 
 使用 `structlog` 记录结构化日志，覆盖请求全生命周期：
 
-```
+``` text
 # 请求级别
 {"event": "request.start", "request_id": "abc123", "model": "haiku-router", "stream": true, "timestamp": "..."}
 {"event": "request.end", "request_id": "abc123", "status": "success", "latency_ms": 1234, "attempt": 1}
@@ -509,10 +509,11 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 
 ### 10. Dashboard (Vue) — 观测与配置管理
 
-Vue 3 + Vite + TypeScript 前端，从 router 的 `/api/*` 接口获取数据。独立 Dashboard 服务反向代理 `/api/*`、`/v1/*` 与 `/health`，转发时删除固定及 `Connection` 动态声明的 hop-by-hop 头，并在进入内存前执行与 Router 一致的 50 MiB 正文上限。
+Vue 3 + Vite + TypeScript 前端，由 Router 同一进程与端口提供静态页面，直接从同源 `/api/*` 获取数据。`/v1/*` 与 `/health` 保持原有 API 行为，不再经过独立 Dashboard 代理。
 
 **页面布局：**
-```
+
+``` text
 ┌─────────────────────────────────────────────────────┐
 │  Agent Router Dashboard                   [刷新]    │
 ├──────────┬──────────┬──────────┬────────────────────┤
@@ -534,7 +535,7 @@ Vue 3 + Vite + TypeScript 前端，从 router 的 `/api/*` 接口获取数据。
 
 **技术栈：** Vue 3 + TypeScript + Vite + ECharts；样式使用项目 CSS token 与组件级响应式布局。
 
-dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的 `/api/*` 与 `/v1/*` 请求。
+dashboard 作为 Vue 目录构建，产物随 Python wheel 分发，由 Router 在 API 路由之后提供静态文件与 SPA 回退。
 
 真实模型图表、统计表、Calls 筛选项和调用详情统一通过 `formatActualModel(provider, model)` 生成 `<provider>/<model>`。Provider 与模型在 API、store 和筛选查询中始终是独立字段，展示字符串不参与身份解析。调用详情额外展示四类价格快照，以区分未配置 (`NULL`) 与显式 0。
 
@@ -571,7 +572,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 ## 关键设计决策
 
 | 决策 | 选择 | 理由 |
-|---|---|---|
+| --- | --- | --- |
 | 配置格式 | TOML | Python 标准库支持，项目统一 (pyproject.toml)，可读性好 |
 | 路由状态 | 有状态 (熔断器) | 每请求独立遍历 provider 链，但通过熔断器跳过持续故障的 provider |
 | 流式故障转移 | 无缓冲直传 | SSE 字节边收边发，优先保证延迟；流中断由 Claude Code 自动重试触发下一 provider |
@@ -586,7 +587,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 ## 错误处理全景
 
 | 场景 | 行为 |
-|---|---|
+| --- | --- |
 | 虚拟模型未配置 | 400 + 已知模型列表 |
 | 所有 provider 失败 | 502 + 聚合错误详情 |
 | 所有 provider 熔断 | 502 (无可用 provider) |
@@ -594,7 +595,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 | provider 返回 429/529 | 故障转移 + 按 `Retry-After` 或默认值进入短冷却，不累计熔断 |
 | provider 连续返回 5xx 或发生瞬态传输错误 | 故障转移 + 达阈值后熔断 |
 | 熔断 provider 恢复 | 600s 后半开探测，成功则关闭熔断器 |
-| 环境变量未设置 | `serve` 可启动；路由时跳过对应 provider；`config validate` 严格失败 |
+| 环境变量未设置 | `agent-router` 可启动；路由时跳过对应 provider；严格配置解析仍失败 |
 | provider 返回非 JSON | 不可重试，立即返回 502 |
 | 流传输中断 | 关闭客户端连接，日志记录 |
 | 客户端断开 | 取消上游请求 (asyncio.CancelledError) |
@@ -606,7 +607,7 @@ dashboard 作为独立 Vue 目录构建，由独立面板服务代理 router 的
 ## 实现顺序
 
 | 阶段 | 内容 | 测试 |
-|---|---|---|
+| --- | --- | --- |
 | 1 | pyproject.toml 依赖 + 目录结构 | - |
 | 2 | config.py (TOML 加载 + Pydantic 校验) | 合法/非法配置、环境变量插值、缺失变量报错 |
 | 3 | providers/base.py + providers/anthropic_compat.py | mock 上游，验证直通和 header 替换 |

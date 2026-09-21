@@ -5,7 +5,6 @@ from copy import deepcopy
 import re
 from pathlib import Path
 import tomllib
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from agent_router import app as app_module
 from agent_router.api import config as config_api
 from agent_router.app import create_app
-from agent_router.cli import command_config_validate
+from agent_router.cli.config_io import load_startup_config
 from agent_router.config import (
     ActualModelDef,
     AppConfig,
@@ -263,10 +262,10 @@ class TestConfigDomainModel:
     @pytest.mark.parametrize(
         ("section", "field", "value"), _INVALID_OPERATIONAL_CONFIG_CASES
     )
-    def test_rejects_invalid_operational_settings_in_parser_and_cli_validate(
+    def test_rejects_invalid_operational_settings_in_parser_and_startup(
         self, section, field, value, tmp_path, capsys
     ):
-        """Reject the same invalid settings through parser and CLI validation."""
+        """Reject the same invalid settings through parser and startup validation."""
         raw = _invalid_operational_config(section, field, value)
 
         with pytest.raises(ConfigError) as exc_info:
@@ -274,16 +273,9 @@ class TestConfigDomainModel:
         assert field in str(exc_info.value)
 
         path = _write_config(tmp_path, config_api._serialize_toml(raw))
-        exit_code = command_config_validate(
-            SimpleNamespace(
-                config=str(path),
-                env_file="",
-                no_env_file=True,
-            )
-        )
-
-        assert exit_code == 1
-        assert field in capsys.readouterr().err
+        with pytest.raises(ConfigError) as startup_error:
+            load_startup_config(str(path), env_file="", no_env_file=True)
+        assert field in str(startup_error.value)
 
     @pytest.mark.parametrize("port", [1, 65535])
     def test_accepts_server_port_boundaries(self, port):

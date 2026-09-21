@@ -14,15 +14,14 @@ dependencies = [
     "httpx[socks]>=0.28",
     "pydantic>=2",
     "structlog>=25",
+    "colorama>=0.4.6; sys_platform == 'win32'",
     "aiosqlite>=0.21",
     "orjson>=3",
     "python-dotenv>=1.2.2",
-    "typer>=0.16",
 ]
 
 [project.scripts]
 agent-router = "agent_router.main:main"
-agent-router-dashboard = "agent_router.cli:dashboard_main"
 
 [tool.uv]
 package = true
@@ -45,7 +44,7 @@ include = [
     "/.github",
     "/.gitignore",
     "/.python-version",
-    "/CLAUDE.md",
+    "/AGENTS.md",
     "/README.md",
     "/config.toml.example",
     "/dashboard",

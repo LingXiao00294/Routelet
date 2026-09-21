@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import json
-from typing import cast
+from contextlib import asynccontextmanager
 
-import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from agent_router import dashboard as dashboard_module
-from agent_router.dashboard import create_dashboard_app, find_dashboard_dist
+from agent_router.app import create_app
+from agent_router.cli.config_io import load_startup_config
+from agent_router.dashboard import find_dashboard_dist, mount_dashboard
+from agent_router.db import CallStore
 
 
 def _create_dist(tmp_path):
@@ -23,277 +23,110 @@ def _create_dist(tmp_path):
     return dist
 
 
+@asynccontextmanager
+async def _client(tmp_path):
+    path = tmp_path / "config.toml"
+    config = load_startup_config(str(path), env_file="", no_env_file=True)
+    app = create_app(
+        config, CallStore(str(tmp_path / "calls.db")), config_path=str(path)
+    )
+    mount_dashboard(app, _create_dist(tmp_path))
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client
+
+
 def test_find_dashboard_dist_accepts_explicit_path(tmp_path):
     dist = _create_dist(tmp_path)
-
     assert find_dashboard_dist(dist) == dist.resolve()
 
 
-def test_find_dashboard_dist_rejects_invalid_explicit_path_without_fallback(
-    tmp_path, monkeypatch
-):
+def test_invalid_explicit_dist_does_not_fall_back(tmp_path, monkeypatch):
     _create_dist(tmp_path / "dashboard")
-    broken_dist = tmp_path / "broken-dist"
-    broken_dist.mkdir()
     monkeypatch.chdir(tmp_path)
+    assert find_dashboard_dist(tmp_path / "missing") is None
 
-    assert find_dashboard_dist(broken_dist) is None
 
-
-@pytest.mark.asyncio
-async def test_dashboard_serves_spa_and_assets(tmp_path):
-    dist = _create_dist(tmp_path)
-    app = create_dashboard_app(dist)
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        index = await client.get("/")
-        nested = await client.get("/config/providers")
+async def test_same_app_serves_spa_assets_and_live_apis(tmp_path):
+    async with _client(tmp_path) as client:
+        for path in ["/", "/calls", "/config/providers", "/config/models"]:
+            page = await client.get(path)
+            assert page.status_code == 200
+            assert "/assets/app.js" in page.text
         asset = await client.get("/assets/app.js")
-
-    assert index.status_code == 200
-    assert "/assets/app.js" in index.text
-    assert nested.status_code == 200
-    assert "/assets/app.js" in nested.text
-    assert asset.status_code == 200
-    assert "console.log" in asset.text
-
-
-@pytest.mark.asyncio
-async def test_dashboard_proxies_router_api(tmp_path, httpx_mock):
-    dist = _create_dist(tmp_path)
-    httpx_mock.add_response(
-        method="GET",
-        url="http://router.local/api/metrics/summary",
-        json={"total_calls": 0},
-    )
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/metrics/summary")
-
-    assert response.status_code == 200, response.text
-    assert response.json() == {"total_calls": 0}
+        assert "console.log" in asset.text
+        assert (await client.head("/assets/app.js")).status_code == 200
+        assert (await client.get("/health")).status_code == 200
+        summary = await client.get("/api/metrics/summary")
+        assert summary.status_code == 200
+        assert summary.json()["total_calls"] == 0
+        assert (await client.get("/api/config")).status_code == 200
+        assert (await client.get("/v1/models")).status_code == 200
+        assert (await client.get("/openapi.json")).status_code == 200
 
 
-@pytest.mark.asyncio
-async def test_dashboard_proxy_strips_connection_nominated_headers(
-    tmp_path, httpx_mock
-):
-    dist = _create_dist(tmp_path)
-    httpx_mock.add_response(
-        method="GET",
-        url="http://router.local/api/metrics/summary",
-        json={"total_calls": 0},
-        headers={
-            "Connection": "x-router-only",
-            "X-Router-Only": "response-secret",
-        },
-    )
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
+async def test_unknown_api_and_missing_assets_do_not_return_spa(tmp_path):
+    async with _client(tmp_path) as client:
+        for path in [
+            "/api",
+            "/api/missing",
+            "/v1",
+            "/v1/missing",
+            "/assets/missing.js",
+            "/assets/missing",
+            "/missing.css",
+        ]:
+            response = await client.get(path)
+            assert response.status_code == 404, path
+            assert "<html>" not in response.text
+        response = await client.post(
+            "/v1/messages", json={"model": "missing", "messages": []}
+        )
+        assert response.status_code == 400
+        assert "error" in response.json()
 
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/api/metrics/summary",
-            headers={
-                "Connection": "keep-alive, x-dashboard-only",
-                "X-Dashboard-Only": "request-secret",
+
+async def test_dashboard_can_save_first_provider_and_model(tmp_path):
+    async with _client(tmp_path) as client:
+        response = await client.put(
+            "/api/config",
+            json={
+                "providers": {
+                    "test": {
+                        "type": "anthropic",
+                        "api_key": "test-secret",
+                        "base_url": "https://example.test",
+                        "models": {"real": {}},
+                    }
+                },
+                "models": {
+                    "virtual": {
+                        "models": [{"provider": "test", "model": "real"}],
+                        "pinned_model": {"provider": "test", "model": "real"},
+                    }
+                },
             },
         )
-
-    upstream_request = httpx_mock.get_request()
-    assert upstream_request is not None
-    assert upstream_request.headers.get("connection") != "keep-alive, x-dashboard-only"
-    assert "x-dashboard-only" not in upstream_request.headers
-    assert "connection" not in response.headers
-    assert "x-router-only" not in response.headers
+        assert response.status_code == 200, response.text
+        models = await client.get("/v1/models")
+        assert models.json()["data"][0]["id"] == "virtual"
+        assert "test-secret" not in (await client.get("/api/config")).text
+    assert '"real"' in (tmp_path / "config.toml").read_text(encoding="utf-8")
 
 
-@pytest.mark.asyncio
-async def test_dashboard_rejects_chunked_body_over_limit(tmp_path, monkeypatch):
-    dist = _create_dist(tmp_path)
-    monkeypatch.setattr(dashboard_module, "_MAX_PROXY_BODY_BYTES", 8)
-
-    class FakeRouterClient:
-        def __init__(self, **kwargs: object) -> None:
-            pass
-
-        async def request(self, *args: object, **kwargs: object) -> None:
-            raise AssertionError("oversized body must not reach the router")
-
-        async def aclose(self) -> None:
-            pass
-
-    async def oversized_body():
-        yield b'{"model"'
-        yield b':"router"}'
-
-    monkeypatch.setattr(dashboard_module.httpx, "AsyncClient", FakeRouterClient)
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.post("/v1/messages", content=oversized_body())
-
-    assert response.status_code == 413
-    assert response.json()["error"]["type"] == "invalid_request_error"
-    assert "8 字节" in response.json()["error"]["message"]
+async def test_static_requests_cannot_read_files_outside_dist(tmp_path):
+    (tmp_path / "secret.txt").write_text("outside-secret", encoding="utf-8")
+    async with _client(tmp_path) as client:
+        for path in ["/%2e%2e/secret.txt", "/..%5csecret.txt", "/%2e%2e%2fsecret.txt"]:
+            response = await client.get(path)
+            assert response.status_code == 404
+            assert "outside-secret" not in response.text
 
 
-@pytest.mark.asyncio
-async def test_dashboard_proxy_strips_decoded_content_encoding(tmp_path, monkeypatch):
-    dist = _create_dist(tmp_path)
-    seen: dict[str, object] = {}
+def test_mount_rejects_missing_index(tmp_path):
+    from fastapi import FastAPI
 
-    class FakeRouterResponse:
-        content = b'{"total_calls":0}'
-        status_code = 200
-        headers = {
-            "content-encoding": "gzip",
-            "content-type": "application/json",
-        }
-
-    class FakeRouterClient:
-        def __init__(self, **kwargs: object) -> None:
-            seen["init"] = kwargs
-
-        async def request(
-            self,
-            method: str,
-            path: str,
-            *,
-            content: bytes,
-            headers: list[tuple[str, str]],
-        ) -> FakeRouterResponse:
-            seen["request"] = {
-                "method": method,
-                "path": path,
-                "content": content,
-                "headers": headers,
-            }
-            return FakeRouterResponse()
-
-        async def aclose(self) -> None:
-            seen["closed"] = True
-
-    monkeypatch.setattr(dashboard_module.httpx, "AsyncClient", FakeRouterClient)
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/metrics/summary")
-
-    upstream_request = cast(dict[str, object], seen["request"])
-    assert isinstance(upstream_request, dict)
-    upstream_headers = cast(list[tuple[str, str]], upstream_request["headers"])
-    request_headers = {key.lower(): value for key, value in upstream_headers}
-    assert request_headers["accept-encoding"] == "identity"
-    assert response.status_code == 200, response.text
-    assert "content-encoding" not in response.headers
-    assert response.json() == {"total_calls": 0}
-
-
-@pytest.mark.asyncio
-async def test_dashboard_streams_v1_messages_without_buffering(tmp_path, monkeypatch):
-    dist = _create_dist(tmp_path)
-    seen: dict[str, object] = {}
-
-    class FakeRouterStreamResponse:
-        status_code = 200
-        headers = {
-            "content-encoding": "gzip",
-            "content-type": "text/event-stream",
-        }
-
-        async def aiter_bytes(self):
-            seen["iterated"] = True
-            yield b"event: message_start\n"
-            yield b"data: {}\n\n"
-
-    class FakeRouterStream:
-        async def __aenter__(self) -> FakeRouterStreamResponse:
-            seen["entered"] = True
-            return FakeRouterStreamResponse()
-
-        async def __aexit__(
-            self,
-            exc_type: object,
-            exc: object,
-            traceback: object,
-        ) -> None:
-            seen["closed"] = True
-
-    class FakeRouterClient:
-        def __init__(self, **kwargs: object) -> None:
-            seen["init"] = kwargs
-
-        async def request(self, *args: object, **kwargs: object) -> None:
-            raise AssertionError("streaming messages must not use buffered request()")
-
-        def stream(
-            self,
-            method: str,
-            path: str,
-            *,
-            content: bytes,
-            headers: list[tuple[str, str]],
-        ) -> FakeRouterStream:
-            seen["stream"] = {
-                "method": method,
-                "path": path,
-                "content": content,
-                "headers": headers,
-            }
-            return FakeRouterStream()
-
-        async def aclose(self) -> None:
-            seen["client_closed"] = True
-
-    monkeypatch.setattr(dashboard_module.httpx, "AsyncClient", FakeRouterClient)
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        async with client.stream(
-            "POST",
-            "/v1/messages",
-            json={"model": "claude", "stream": True},
-        ) as response:
-            chunks = [chunk async for chunk in response.aiter_bytes()]
-
-    upstream_request = cast(dict[str, object], seen["stream"])
-    upstream_headers = cast(list[tuple[str, str]], upstream_request["headers"])
-    request_headers = {key.lower(): value for key, value in upstream_headers}
-    body = json.loads(cast(bytes, upstream_request["content"]))
-
-    assert upstream_request["method"] == "POST"
-    assert upstream_request["path"] == "/v1/messages"
-    assert body["stream"] is True
-    assert request_headers["accept-encoding"] == "identity"
-    assert seen["entered"] is True
-    assert seen["iterated"] is True
-    assert seen["closed"] is True
-    assert response.status_code == 200
-    assert response.headers["content-type"].startswith("text/event-stream")
-    assert "content-encoding" not in response.headers
-    assert b"".join(chunks) == b"event: message_start\ndata: {}\n\n"
-
-
-@pytest.mark.asyncio
-async def test_dashboard_returns_502_when_router_is_unavailable(tmp_path, httpx_mock):
-    dist = _create_dist(tmp_path)
-    httpx_mock.add_exception(
-        httpx.ConnectError("connection refused"),
-        method="GET",
-        url="http://router.local/api/metrics/summary",
-    )
-    app = create_dashboard_app(dist, router_base_url="http://router.local")
-    transport = ASGITransport(app=app)
-
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get("/api/metrics/summary")
-
-    assert response.status_code == 502
-    assert "无法连接到 router API" in response.json()["detail"]
+    with pytest.raises(ValueError, match="index.html"):
+        mount_dashboard(FastAPI(), tmp_path)
