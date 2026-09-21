@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import cast
 
 import httpx
@@ -628,7 +629,6 @@ class TestMessages:
             b"1e999",
             b'"\\ud800"',
             b'{"\\udfff":"value"}',
-            b"[" * 10000 + b"0" + b"]" * 10000,
         ],
         ids=[
             "nan",
@@ -636,7 +636,6 @@ class TestMessages:
             "float-overflow",
             "surrogate-value",
             "surrogate-key",
-            "decoder-depth",
         ],
     )
     async def test_rejects_unforwardable_json_before_routing(
@@ -676,6 +675,30 @@ class TestMessages:
         assert response.status_code == 400
         assert response.json()["error"]["type"] == "invalid_request_error"
         assert upstream_calls == 0
+        await recorder.wait_idle(timeout=1)
+        _, total = await store.list_calls()
+        assert total == 0
+
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("operation", ["loads", "dumps"])
+    async def test_json_recursion_errors_are_client_errors(
+        self, client, store, recorder, monkeypatch, operation, stream
+    ):
+        # CPython versions have different JSON nesting limits. Exercise the
+        # error path without assuming that a fixed nesting depth is invalid.
+        codec = SimpleNamespace(loads=json.loads, dumps=json.dumps)
+
+        def fail_recursion(*args, **kwargs):
+            raise RecursionError("JSON nesting limit exceeded")
+
+        monkeypatch.setattr(codec, operation, fail_recursion)
+        monkeypatch.setattr(app_module, "json", codec)
+        response = await client.post(
+            "/v1/messages", json={"model": "test-router", "stream": stream}
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["type"] == "invalid_request_error"
         await recorder.wait_idle(timeout=1)
         _, total = await store.list_calls()
         assert total == 0
@@ -725,12 +748,17 @@ class TestMessages:
         assert call["status"] == "success"
         assert json.loads(call["request_body"]) == body
 
+    @pytest.mark.parametrize("depth", [2000, 10000])
     async def test_forwards_deep_json_supported_by_httpx(
-        self, app_config, store, recorder
+        self, app_config, store, recorder, depth
     ):
         app_config.router.mode = "failover"
         content = (
-            b'{"model":"test-router","extra":' + b"[" * 2000 + b"0" + b"]" * 2000 + b"}"
+            b'{"model":"test-router","extra":'
+            + b"[" * depth
+            + b"0"
+            + b"]" * depth
+            + b"}"
         )
         try:
             expected = json.loads(content)
@@ -739,7 +767,7 @@ class TestMessages:
                 "POST", "https://provider.test", json=expected
             ).content
         except RecursionError:
-            pytest.skip("This Python runtime cannot forward 2000 nested arrays")
+            pytest.skip(f"This Python runtime cannot forward {depth} nested arrays")
         received = []
 
         def handler(request):
