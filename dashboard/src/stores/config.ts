@@ -4,7 +4,7 @@ import * as api from "@/api";
 import type {
   ActualModelConfig,
   AppConfig,
-  ConfigReferenceError,
+  ModelRef,
   RouterMode,
   VirtualModelConfig,
 } from "@/api/types";
@@ -21,23 +21,6 @@ import {
 
 function cloneConfig(c: AppConfig): AppConfig {
   return structuredClone(c);
-}
-
-function referenceConflict(error: unknown): ConfigReferenceError | null {
-  if (!(error instanceof api.ApiError)) return null;
-  const detail = error.detail;
-  if (!detail || typeof detail !== "object" || !("error" in detail)) return null;
-  const conflict = (detail as { error?: unknown }).error;
-  if (!conflict || typeof conflict !== "object") return null;
-  const candidate = conflict as Partial<ConfigReferenceError>;
-  if (
-    (candidate.code !== "provider_in_use" && candidate.code !== "model_in_use") ||
-    typeof candidate.provider !== "string" ||
-    !Array.isArray(candidate.referenced_by)
-  ) {
-    return null;
-  }
-  return candidate as ConfigReferenceError;
 }
 
 function validProviderBaseUrl(value: string): boolean {
@@ -198,13 +181,6 @@ export const useConfigStore = defineStore("config", () => {
       draft.value.router.recovery_timeout <= 0
     ) {
       errs["router.recovery_timeout"] = "需 > 0";
-    }
-
-    if (!Object.keys(draft.value.providers).length) {
-      errs.providers = "至少保留一个 provider";
-    }
-    if (!Object.keys(models.value).length) {
-      errs.models = "至少保留一个虚拟模型";
     }
 
     for (const [name, p] of Object.entries(draft.value.providers)) {
@@ -370,17 +346,6 @@ export const useConfigStore = defineStore("config", () => {
       }
       return true;
     } catch (err) {
-      const conflict = referenceConflict(err);
-      if (conflict) {
-        const target =
-          conflict.code === "provider_in_use"
-            ? `Provider「${conflict.provider}」`
-            : `实际模型「${conflict.provider}/${conflict.model}」`;
-        const message = `${target}仍被虚拟模型引用：${conflict.referenced_by.join("、")}。请先单独保存引用移除。`;
-        fieldErrors.value = { ...fieldErrors.value, providers: message };
-        error.value = message;
-        throw new Error(message);
-      }
       error.value = err instanceof Error ? err.message : "保存失败";
       throw err;
     } finally {
@@ -474,38 +439,41 @@ export const useConfigStore = defineStore("config", () => {
     };
   }
 
-  function referencedBy(provider: string, model?: string): string[] {
-    return Object.entries(models.value)
-      .filter(([, virtualModel]) => {
-        const referencedInModels = virtualModel.models.some(
-          (ref) => ref.provider === provider && (model == null || ref.model === model),
-        );
-        const pinnedModel = virtualModel.pinned_model;
-        const referencedByPin =
-          pinnedModel?.provider === provider && (model == null || pinnedModel.model === model);
-        return referencedInModels || referencedByPin;
-      })
-      .map(([name]) => name);
+  function removeReferences(provider: string, model?: string) {
+    const matches = (ref: ModelRef) =>
+      ref.provider === provider && (model == null || ref.model === model);
+    for (const [name, virtualModel] of Object.entries(models.value)) {
+      const remaining = virtualModel.models.filter((ref) => !matches(ref));
+      if (remaining.length !== virtualModel.models.length) {
+        if (!remaining.length) {
+          delete models.value[name];
+          continue;
+        }
+        virtualModel.models = remaining;
+      }
+      if (virtualModel.pinned_model && matches(virtualModel.pinned_model)) {
+        virtualModel.pinned_model =
+          draft.value?.router.mode === "sticky" && remaining[0]
+            ? { ...remaining[0] }
+            : null;
+      }
+    }
   }
 
-  function removeProvider(name: string): string[] {
-    if (!draft.value) return [];
-    const references = referencedBy(name);
-    if (references.length) return references;
+  function removeProvider(name: string) {
+    if (!draft.value?.providers[name]) return;
+    removeReferences(name);
     delete draft.value.providers[name];
     knownProviders.value.delete(name);
     const { [name]: _removed, ...rest } = maskedApiKeys.value;
     void _removed;
     maskedApiKeys.value = rest;
-    return [];
   }
 
-  function removeActualModel(provider: string, model: string): string[] {
-    if (!draft.value?.providers[provider]) return [];
-    const references = referencedBy(provider, model);
-    if (references.length) return references;
+  function removeActualModel(provider: string, model: string) {
+    if (!draft.value?.providers[provider]?.models[model]) return;
+    removeReferences(provider, model);
     delete draft.value.providers[provider].models[model];
-    return [];
   }
 
   function addActualModel(

@@ -11,7 +11,6 @@ from tempfile import NamedTemporaryFile
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 
 from agent_router.config import AppConfig, ConfigError, has_unresolved_env_var
 from agent_router.config import parse_config_data
@@ -183,7 +182,7 @@ async def _update_config_transaction(
     config_path: str,
     body: dict[str, Any],
     reload_config_fn: Callable[[AppConfig], Awaitable[None]] | None,
-) -> dict[str, str] | JSONResponse:
+) -> dict[str, str]:
     """Validate, persist, and reload one configuration transaction.
 
     The caller must serialize invocations that share ``config_path`` so the
@@ -196,7 +195,7 @@ async def _update_config_transaction(
         reload_config_fn: Optional callback that applies the validated runtime.
 
     Returns:
-        A success payload, or a fixed conflict response for referenced deletes.
+        A success payload after removing references to deleted catalog entries.
 
     Raises:
         HTTPException: If validation, persistence, reload, or rollback fails.
@@ -207,9 +206,7 @@ async def _update_config_transaction(
 
     try:
         candidate = _merge_and_preserve_keys(body, existing)
-        conflict = _deletion_conflict(existing, candidate)
-        if conflict is not None:
-            return JSONResponse(status_code=409, content={"error": conflict})
+        _remove_deleted_references(existing, candidate)
         content = _serialize_toml(candidate)
         round_trip = tomllib.loads(content)
         runtime_config = parse_config_data(round_trip, allow_unresolved_api_keys=True)
@@ -244,81 +241,56 @@ async def _update_config_transaction(
     return {"status": "ok", "message": "配置已更新并热重载"}
 
 
-def _references_by_identity(
-    raw: dict[str, Any],
-) -> dict[tuple[str, str], set[str]]:
-    references: dict[tuple[str, str], set[str]] = {}
-    models = raw.get("models", {})
-    if not isinstance(models, dict):
-        return references
-    for virtual_name, virtual_model in models.items():
-        if not isinstance(virtual_model, dict):
-            continue
-        refs = list(virtual_model.get("models", []))
-        pinned_model = virtual_model.get("pinned_model")
-        if isinstance(pinned_model, dict):
-            refs.append(pinned_model)
-        for ref in refs:
-            if not isinstance(ref, dict):
-                continue
-            provider = ref.get("provider")
-            model = ref.get("model")
-            if isinstance(provider, str) and isinstance(model, str):
-                references.setdefault((provider, model), set()).add(str(virtual_name))
-    return references
-
-
-def _deletion_conflict(
+def _remove_deleted_references(
     existing: dict[str, Any], candidate: dict[str, Any]
-) -> dict[str, Any] | None:
-    """返回必须分两次保存的 Provider 或实际模型删除冲突。"""
-    existing_providers = existing.get("providers", {})
-    candidate_providers = candidate.get("providers", {})
-    if not isinstance(existing_providers, dict):
-        raise ConfigError("现有配置的 providers 必须是对象")
-    if not isinstance(candidate_providers, dict):
-        raise ConfigError("providers 必须是对象")
-    references = _references_by_identity(existing)
-
-    for provider in sorted(set(existing_providers) - set(candidate_providers)):
-        referenced_by = sorted(
-            {
-                virtual_name
-                for (provider_name, _), names in references.items()
-                if provider_name == provider
-                for virtual_name in names
-            }
-        )
-        if referenced_by:
-            return {
-                "code": "provider_in_use",
-                "provider": provider,
-                "referenced_by": referenced_by,
-            }
-
-    for provider in sorted(set(existing_providers) & set(candidate_providers)):
+) -> None:
+    """级联清理本次删除的目录项，保留其他引用及其顺序。"""
+    existing_providers: dict[str, Any] = existing.get("providers", {})
+    candidate_providers: dict[str, Any] = candidate.get("providers", {})
+    deleted_providers = set(existing_providers) - set(candidate_providers)
+    deleted_models: set[tuple[str, str]] = set()
+    for provider in set(existing_providers) & set(candidate_providers):
         existing_provider = existing_providers[provider]
-        candidate_provider = candidate_providers[provider]
         if not isinstance(existing_provider, dict):
             raise ConfigError(f"现有 Provider '{provider}' 配置必须是对象")
-        if not isinstance(candidate_provider, dict):
-            raise ConfigError(f"Provider '{provider}' 配置必须是对象")
-        existing_models = existing_provider.get("models", {})
-        candidate_models = candidate_provider.get("models", {})
-        if not isinstance(existing_models, dict):
-            raise ConfigError(f"现有 Provider '{provider}' 的 models 必须是对象")
-        if not isinstance(candidate_models, dict):
+        old_models: dict[str, Any] = existing_provider.get("models", {})
+        new_models: dict[str, Any] = candidate_providers[provider].get("models", {})
+        if not isinstance(old_models, dict) or not isinstance(new_models, dict):
             raise ConfigError(f"Provider '{provider}' 的 models 必须是对象")
-        for model in sorted(set(existing_models) - set(candidate_models)):
-            referenced_by = sorted(references.get((provider, model), set()))
-            if referenced_by:
-                return {
-                    "code": "model_in_use",
-                    "provider": provider,
-                    "model": model,
-                    "referenced_by": referenced_by,
-                }
-    return None
+        deleted_models.update(
+            (provider, model) for model in set(old_models) - set(new_models)
+        )
+
+    def is_deleted(ref: Any) -> bool:
+        if not isinstance(ref, dict):
+            return False
+        provider, model = ref.get("provider"), ref.get("model")
+        if not isinstance(provider, str) or not isinstance(model, str):
+            return False
+        return provider in deleted_providers or (provider, model) in deleted_models
+
+    router = candidate.get("router", {})
+    if not isinstance(router, dict):
+        raise ConfigError("router 必须是对象")
+    models: dict[str, Any] = candidate.get("models", {})
+    if not isinstance(models, dict):
+        raise ConfigError("models 必须是对象")
+    for name, virtual_model in list(models.items()):
+        if not isinstance(virtual_model, dict):
+            continue
+        refs = virtual_model.get("models")
+        if not isinstance(refs, list):
+            continue
+        remaining = [ref for ref in refs if not is_deleted(ref)]
+        if len(remaining) != len(refs):
+            if not remaining:
+                del models[name]
+                continue
+            virtual_model["models"] = remaining
+        if is_deleted(virtual_model.get("pinned_model")):
+            virtual_model.pop("pinned_model", None)
+            if router.get("mode", "sticky") == "sticky" and remaining:
+                virtual_model["pinned_model"] = deepcopy(remaining[0])
 
 
 def _merge_and_preserve_keys(

@@ -664,48 +664,120 @@ class TestConfigApi:
         assert logging_calls == []
         _assert_no_temp_file(path)
 
-    async def test_provider_deletion_conflict_has_fixed_409_contract(
+    @pytest.mark.parametrize("mode", ["sticky", "failover"])
+    @pytest.mark.parametrize("delete_provider", [False, True])
+    async def test_deletion_cleans_references_and_reloads(
+        self, tmp_path, store, mode, delete_provider
+    ):
+        path = _write_config(tmp_path)
+        app, client = await self._client(path, store)
+        body = _raw_config()
+        body["router"]["mode"] = mode
+        body["models"]["only_deleted"] = {
+            "models": [{"provider": "p1", "model": "shared"}],
+            "pinned_model": {"provider": "p1", "model": "shared"},
+        }
+        if delete_provider:
+            del body["providers"]["p1"]
+        else:
+            del body["providers"]["p1"]["models"]["shared"]
+
+        async with client:
+            response = await client.put("/api/config", json=body)
+            saved = (await client.get("/api/config")).json()
+
+        assert response.status_code == 200, response.text
+        remaining = {"provider": "p2", "model": "shared"}
+        expected: dict[str, list[dict[str, str]] | dict[str, str]] = {
+            "models": [remaining]
+        }
+        if mode == "sticky":
+            expected["pinned_model"] = remaining
+        assert saved["models"] == {"router": expected}
+        assert (
+            tomllib.loads(path.read_text(encoding="utf-8"))["models"] == saved["models"]
+        )
+        runtime = app.state.router_engine.config
+        assert list(runtime.models) == ["router"]
+        assert [(p.name, p.model) for p in runtime.models["router"].providers] == [
+            ("p2", "shared")
+        ]
+
+    async def test_catalog_only_deletion_cleans_merged_references(
         self, tmp_path, store
     ):
         path = _write_config(tmp_path)
         _, client = await self._client(path, store)
+        providers = _raw_config()["providers"]
+        del providers["p1"]["models"]["shared"]
+
+        async with client:
+            response = await client.put("/api/config", json={"providers": providers})
+
+        assert response.status_code == 200, response.text
+        saved = tomllib.loads(path.read_text(encoding="utf-8"))
+        assert saved["models"]["router"] == {
+            "models": [{"provider": "p2", "model": "shared"}],
+            "pinned_model": {"provider": "p2", "model": "shared"},
+        }
+
+    async def test_deleting_all_providers_clears_virtual_models(self, tmp_path, store):
+        path = _write_config(tmp_path)
+        app, client = await self._client(path, store)
+
+        async with client:
+            response = await client.put("/api/config", json={"providers": {}})
+
+        assert response.status_code == 200, response.text
+        saved = load_config(str(path))
+        assert saved.providers == {}
+        assert saved.models == {}
+        assert app.state.router_engine.config.models == {}
+
+    @pytest.mark.parametrize("remove_virtual_model", [False, True])
+    async def test_reference_removal_and_model_rename_can_be_saved_together(
+        self, tmp_path, store, remove_virtual_model
+    ):
+        path = _write_config(tmp_path)
+        _, client = await self._client(path, store)
         body = _raw_config()
-        del body["providers"]["p2"]
+        catalog = body["providers"]["p1"]["models"]
+        catalog["renamed"] = catalog.pop("shared")
+        if remove_virtual_model:
+            body["models"] = {}
+        else:
+            body["models"]["router"] = {
+                "models": [{"provider": "p1", "model": "renamed"}],
+                "pinned_model": {"provider": "p1", "model": "renamed"},
+            }
 
         async with client:
             response = await client.put("/api/config", json=body)
 
-        assert response.status_code == 409
-        error = response.json()["error"]
-        assert error == {
-            "code": "provider_in_use",
-            "provider": "p2",
-            "referenced_by": ["router"],
-        }
-        assert "model" not in error
+        assert response.status_code == 200, response.text
+        saved = tomllib.loads(path.read_text(encoding="utf-8"))
+        assert saved.get("models", {}) == body["models"]
+        assert saved["providers"]["p1"]["models"] == catalog
 
-    async def test_actual_model_deletion_conflict_has_fixed_409_contract(
+    async def test_deletion_still_rejects_unrelated_dangling_references(
         self, tmp_path, store
     ):
         path = _write_config(tmp_path)
+        original = path.read_bytes()
         _, client = await self._client(path, store)
         body = _raw_config()
         del body["providers"]["p1"]["models"]["shared"]
+        body["models"]["router"]["models"].append(
+            {"provider": "p2", "model": "missing"}
+        )
 
         async with client:
             response = await client.put("/api/config", json=body)
 
-        assert response.status_code == 409
-        assert response.json() == {
-            "error": {
-                "code": "model_in_use",
-                "provider": "p1",
-                "model": "shared",
-                "referenced_by": ["router"],
-            }
-        }
+        assert response.status_code == 400
+        assert path.read_bytes() == original
 
-    async def test_reference_removal_must_be_saved_before_model_deletion(
+    async def test_reference_removal_can_be_saved_before_model_deletion(
         self, tmp_path, store
     ):
         path = _write_config(tmp_path)
@@ -785,8 +857,9 @@ class TestConfigApi:
         assert logging_calls == []
         _assert_no_temp_file(path)
 
+    @pytest.mark.parametrize("delete_model", [False, True])
     async def test_runtime_switch_failure_rolls_back_file_and_runtime(
-        self, tmp_path, store, monkeypatch
+        self, tmp_path, store, monkeypatch, delete_model
     ):
         path = _write_config(tmp_path)
         original = path.read_bytes()
@@ -805,6 +878,8 @@ class TestConfigApi:
         )
         body = _raw_config()
         body["router"]["failure_threshold"] = 2
+        if delete_model:
+            del body["providers"]["p1"]["models"]["shared"]
         async with client:
             response = await client.put("/api/config", json=body)
 
