@@ -190,6 +190,39 @@ async def test_non_finite_cost_aggregate_is_unknown_and_api_remains_available(
     assert response.json() == result
 
 
+@pytest.mark.parametrize(
+    ("costs", "expected"),
+    [
+        ([], 0),
+        ([None], 0),
+        ([0.0], 0),
+        ([0.125, None], 0.125),
+        ([float("inf"), float("-inf")], None),
+    ],
+    ids=["empty", "unknown", "zero", "finite", "indeterminate-sum"],
+)
+async def test_summary_distinguishes_empty_costs_from_null_aggregate(
+    store: CallStore, costs: list[float | None], expected: float | None
+) -> None:
+    # Opposite infinities yield SQL NULL on every supported SQLite version.
+    # Some SQLite versions also produce NULL when finite inputs overflow SUM.
+    for cost in costs:
+        await store.record(virtual_model="model", status="success", cost_usd=cost)
+
+    result = await store.summary()
+    assert result["total_cost_usd"] == expected
+    assert result["total_calls"] == len(costs)
+    app = FastAPI()
+    app.include_router(create_metrics_router(store))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+        base_url="http://metrics.test",
+    ) as client:
+        response = await client.get("/api/metrics/summary")
+    assert response.status_code == 200
+    assert response.json() == result
+
+
 async def test_non_finite_stored_cost_is_sanitized_only_in_public_output(
     store: CallStore,
 ) -> None:

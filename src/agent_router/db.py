@@ -426,6 +426,7 @@ class CallStore:
                 SUM(cache_read_tokens) AS total_cache_read,
                 SUM(cache_write_tokens) AS total_cache_write,
                 SUM(cost_usd) AS total_cost_usd,
+                COUNT(cost_usd) AS cost_count,
                 AVG(CASE WHEN status = 'success' THEN latency_ms END) AS avg_latency_ms
             FROM calls"""
             )
@@ -433,6 +434,12 @@ class CallStore:
         r = dict(row[0])
         total = r["total_calls"] or 0
         success = r["success_count"] or 0
+        # SQLite may return NULL (rather than infinity) for an overflowing SUM.
+        # Only an aggregate with no non-NULL inputs should default to zero.
+        cost = r["total_cost_usd"]
+        total_cost = round(cost, 6) if cost is not None else None
+        if r["cost_count"] == 0:
+            total_cost = 0
         return _finite_cost_fields(
             {
                 "total_calls": total,
@@ -443,7 +450,7 @@ class CallStore:
                 "total_output_tokens": r["total_output_tokens"] or 0,
                 "total_cache_read": r["total_cache_read"] or 0,
                 "total_cache_write": r["total_cache_write"] or 0,
-                "total_cost_usd": round(r["total_cost_usd"] or 0, 6),
+                "total_cost_usd": total_cost,
                 "avg_latency_ms": round(r["avg_latency_ms"] or 0),
             }
         )
