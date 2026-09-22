@@ -7,7 +7,7 @@ Routelet 是本地 LLM API 路由代理，使用 Python 3.12+、FastAPI 和 SQLi
 - `src/routelet/`：后端；`routing.py` 负责路由，`providers/` 封装上游协议，`api/` 提供配置与统计接口，`cli/` 提供单一启动入口。
 - `dashboard/src/`：Vue 3、TypeScript、Pinia 前端；页面、组件、状态和样式分别位于 `views/`、`components/`、`stores/`、`styles/`。
 - `tests/`、`dashboard/tests/`：后端与前端测试；`dashboard/dist/` 是生成的静态资源。
-- `docs/design.md`：架构设计；`config.toml.example`、`.env.example`：配置示例。
+- `docs/design.md`：架构设计与配置格式；`.env.example`：环境变量示例。
 
 ## 安装、开发与构建
 

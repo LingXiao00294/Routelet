@@ -61,7 +61,7 @@ routelet --dist dashboard/dist         # 指定前端构建目录
 
 升级旧版本时，先停止服务，把原启动目录中的 `config.toml`、`.env`（如有）、`calls.db` 和 `logs/` 复制到 `~/.routelet/`，再运行 `routelet`。旧目录不会被自动导入；若新目录已有数据，请先核对再合并。原配置中的相对日志路径会改为相对于新目录。未解析的 `${ENV_VAR}` 不阻止页面启动，但实际请求会跳过对应 Provider。没有可用模型时，请先在页面完成配置。
 
-未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/routelet-0.1.0-py3-none-any.whl` 安装。`config.toml.example` 仍可作为手工配置参考，首次启动自动生成的是空配置。
+未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/routelet-0.1.0-py3-none-any.whl` 安装。首次启动会自动生成空配置，可通过 Dashboard 完成设置。
 
 ## 安全边界
 
@@ -79,7 +79,7 @@ Routelet 不校验客户端传入的 token，Dashboard 还能读取调用详情�
 
 ### config.toml
 
-完整可加载示例见 [`config.toml.example`](config.toml.example)，密钥变量见 [`.env.example`](.env.example)。下面仅展示连接与模型配置片段，合并时需保留完整示例中各 Provider 的 `type` 协议字段。示例服务地址和模型名均为占位符，使用前请换成实际值；价格仅用于说明格式。
+默认配置位于 `~/.routelet/config.toml`，推荐通过 Dashboard 管理。手工编辑时可参考下方配置，密钥变量见 [`.env.example`](.env.example)。示例服务地址和模型名均为占位符，使用前请换成实际值；价格仅用于说明格式。
 
 ```toml
 [server]
@@ -89,6 +89,7 @@ log_level = "debug"
 
 # Provider 连接设置与实际模型目录
 [providers.provider-a]
+type = "anthropic"
 api_key = "${PROVIDER_A_API_KEY}"
 base_url = "https://api.provider-a.example"
 
@@ -100,6 +101,7 @@ cache_read_price_per_million = 0.26
 cache_write_price_per_million = 0  # 显式 0 与未配置的 NULL 不同
 
 [providers.provider-b]
+type = "anthropic"
 api_key = "${PROVIDER_B_API_KEY}"
 base_url = "https://api.provider-b.example"
 
@@ -116,7 +118,7 @@ models = [
 
 `${ENV_VAR}` 会自动从环境变量或 `.env` 文件展开。未设置时不会阻止 `routelet` 启动，方便先打开 dashboard 修改配置；包含未解析 key 的 provider 在实际请求路由时会被跳过，全部 provider 都不可用时返回明确错误。
 
-当前版本仅实现 Messages API 兼容协议，`type` 的可用值以完整配置示例为准。Chat Completions 协议转换仍在规划中；配置加载和 Dashboard 会拒绝未实现的协议类型。
+当前版本仅实现 Messages API 兼容协议，`type` 必须为 `"anthropic"`。Chat Completions 协议转换仍在规划中；配置加载和 Dashboard 会拒绝未实现的协议类型。
 
 实际模型及价格只在对应 Provider 的 `models` 目录下定义一次。虚拟模型的 `models` 数组只能引用目录中已有的 `{ provider, model }`，数组顺序会在运行时生成从 1 开始的优先级；sticky 模式还必须提供位于该数组中的结构化 `pinned_model`。同一虚拟模型不能重复引用同一个实际模型。
 

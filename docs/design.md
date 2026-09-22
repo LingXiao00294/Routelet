@@ -19,7 +19,6 @@ Agent → Routelet (本地 FastAPI) → Provider A   (优先级 1)
 ``` text
 routelet/
 ├── pyproject.toml                  # 项目元数据 + 依赖
-├── config.toml.example             # 配置示例，运行配置默认在 ~/.routelet/config.toml
 ├── docs/
 │   └── design.md                   # 本文档
 ├── src/routelet/
@@ -76,7 +75,7 @@ TOML 解析使用 Python 3.11+ 标准库 `tomllib`，无需额外依赖。
 
 ## 配置格式 (config.toml)
 
-以下是连接与模型配置片段；完整可加载配置见 [`config.toml.example`](../config.toml.example)，合并时需保留其中各 Provider 的 `type` 协议字段。Provider 名称、模型、地址和价格均为示例，使用前请替换为实际值。
+运行配置默认位于 `~/.routelet/config.toml`，首次启动自动创建空配置，推荐通过 Dashboard 管理。以下是连接与模型配置示例，每个 Provider 的 `type` 必须为 `"anthropic"`。Provider 名称、模型、地址和价格均为示例，使用前请替换为实际值。
 
 ```toml
 [server]
@@ -87,6 +86,7 @@ port = 9456
 # Provider 连接设置与实际模型目录
 # ==========================================
 [providers.provider-a]
+type = "anthropic"
 api_key = "${PROVIDER_A_API_KEY}"
 base_url = "https://api.provider-a.example"
 
@@ -99,6 +99,7 @@ cache_write_price_per_million = 1.25
 [providers.provider-a.models."model-a-pro"]
 
 [providers.provider-b]
+type = "anthropic"
 api_key = "${PROVIDER_B_API_KEY}"
 base_url = "https://api.provider-b.example"
 
