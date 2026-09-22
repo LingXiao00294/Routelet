@@ -24,7 +24,7 @@ test("overview, time scope, command palette and theme", async ({ page }) => {
   });
   await page.keyboard.press("Control+k");
   await page
-    .getByRole("textbox", { name: "搜索页面、模型或上游" })
+    .getByRole("textbox", { name: "搜索页面、Router 或 Provider" })
     .fill("coding-assistant");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/routes\?q=coding-assistant/);
@@ -62,7 +62,7 @@ test("call pagination, structured filtering, inspector and CSV download", async 
   await expect(dialog).toContainText("这是用于验证界面的模拟请求");
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await page.getByLabel("上游服务", { exact: true }).selectOption("DeepSeek");
+  await page.getByLabel("Provider", { exact: true }).selectOption("DeepSeek");
   await page
     .getByLabel("实际模型", { exact: true })
     .selectOption("deepseek-v4-pro");
@@ -84,10 +84,10 @@ test("empty workspace onboarding through provider, catalog, route and publish", 
 }) => {
   const state = await installApi(page, true);
   await page.goto("/");
-  await page.getByRole("link", { name: /连接第一个上游/ }).click();
-  await page.getByRole("button", { name: "添加上游", exact: true }).click();
+  await page.getByRole("link", { name: /连接第一个 Provider/ }).click();
+  await page.getByRole("button", { name: "添加 Provider", exact: true }).click();
   let dialog = page.getByRole("dialog");
-  await dialog.getByLabel(/上游名称/).fill("test-provider");
+  await dialog.getByLabel(/Provider 名称/).fill("test-provider");
   await dialog.getByLabel(/Base URL/).fill("https://api.example.test");
   await dialog.getByLabel(/API Key/).fill("test-only-secret");
   await dialog.getByRole("button", { name: "应用到草稿" }).click();
@@ -98,13 +98,13 @@ test("empty workspace onboarding through provider, catalog, route and publish", 
   await dialog.getByLabel("输入", { exact: true }).fill("0");
   await dialog.getByLabel("输出", { exact: true }).fill("3.5");
   await dialog.getByRole("button", { name: "应用到草稿" }).click();
-  await page.getByRole("link", { name: /^路由编排/ }).click();
+  await page.getByRole("link", { name: /^Routers/ }).click();
   await page
-    .getByRole("button", { name: "新建路由", exact: true })
+    .getByRole("button", { name: "新建 Router", exact: true })
     .first()
     .click();
   dialog = page.getByRole("dialog");
-  await dialog.getByLabel(/虚拟模型名称/).fill("first-route");
+  await dialog.getByLabel(/Router 名称/).fill("first-route");
   await dialog.getByLabel("选择候选模型").selectOption({ label: "test/model" });
   await dialog.getByRole("button", { name: "添加", exact: true }).click();
   await dialog.getByRole("button", { name: "应用到草稿" }).click();
@@ -122,7 +122,7 @@ test("empty workspace onboarding through provider, catalog, route and publish", 
     model: "test/model",
   });
   await page.getByRole("link", { name: "请求实验室", exact: true }).click();
-  await expect(page.getByLabel("模型路由", { exact: true })).toHaveValue(
+  await expect(page.getByLabel("Router", { exact: true })).toHaveValue(
     "first-route",
   );
 });
@@ -132,7 +132,7 @@ test("routing switch persists in both directions and supports keyboard", async (
 }) => {
   const state = await installApi(page);
   await page.goto("/routes");
-  const toggle = page.getByRole("switch", { name: "自动路由", exact: true });
+  const toggle = page.getByRole("switch", { name: "自动故障转移", exact: true });
   await expect(toggle).toBeChecked();
   await toggle.focus();
   await page.keyboard.press("Space");
@@ -165,11 +165,11 @@ test("routing switch persists in both directions and supports keyboard", async (
 test("route reorder and pin survive publication", async ({ page }) => {
   const state = await installApi(page);
   await page.goto("/routes");
-  await page.getByRole("switch", { name: "自动路由", exact: true }).click();
+  await page.getByRole("switch", { name: "自动故障转移", exact: true }).click();
   await page
     .locator(".route-card")
     .first()
-    .getByRole("button", { name: "编排" })
+    .getByRole("button", { name: "编辑 Router" })
     .click();
   const dialog = page.getByRole("dialog");
   await dialog
@@ -200,7 +200,7 @@ test("route dragging previews the destination, animates and persists the order",
   await page
     .locator(".route-card")
     .first()
-    .getByRole("button", { name: "编排" })
+    .getByRole("button", { name: "编辑 Router" })
     .click();
   const dialog = page.getByRole("dialog");
   const rows = dialog.locator(".route-editor-row");
@@ -254,7 +254,7 @@ test("route dragging cancels safely and supports moving upward and keyboard", as
   await page
     .locator(".route-card")
     .first()
-    .getByRole("button", { name: "编排" })
+    .getByRole("button", { name: "编辑 Router" })
     .click();
   const dialog = page.getByRole("dialog");
   const rows = dialog.locator(".route-editor-row");
@@ -298,7 +298,7 @@ test("route editor fits mobile and positions the select chevron inside the field
   await page
     .locator(".route-card")
     .first()
-    .getByRole("button", { name: "编排" })
+    .getByRole("button", { name: "编辑 Router" })
     .click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("选择候选模型").scrollIntoViewIfNeeded();
@@ -322,12 +322,12 @@ test("cascade deletion gives impact preview and remains a draft", async ({
   const state = await installApi(page);
   await page.goto("/providers");
   await page
-    .getByRole("button", { name: "删除上游 Anthropic", exact: true })
+    .getByRole("button", { name: "删除 Provider Anthropic", exact: true })
     .click();
-  await expect(page.getByRole("dialog")).toContainText("2 条路由");
+  await expect(page.getByRole("dialog")).toContainText("2 个 Router");
   await page.getByRole("button", { name: "从草稿中删除" }).click();
   expect(state.writes).toHaveLength(0);
-  await page.getByRole("link", { name: /^路由编排/ }).click();
+  await page.getByRole("link", { name: /^Routers/ }).click();
   await expect(
     page.locator(".chain-node").filter({ hasText: "Anthropic" }),
   ).toHaveCount(0);
@@ -380,7 +380,7 @@ test("playground select chevron stays inset and centered in both themes and view
       await page.setViewportSize({ width, height: 900 });
       await page.goto("/playground");
       await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
-      const select = page.getByLabel("模型路由", { exact: true });
+      const select = page.getByLabel("Router", { exact: true });
       await expect(select).toHaveValue("coding-assistant");
       await expect(select).toHaveCSS("appearance", "none");
       const arrow = page.locator(".select-control > svg");
@@ -407,12 +407,12 @@ test("playground handles both streamed and JSON responses", async ({
 }) => {
   await installApi(page);
   await page.goto("/playground");
-  await expect(page.getByLabel("模型路由", { exact: true })).toHaveValue(
+  await expect(page.getByLabel("Router", { exact: true })).toHaveValue(
     "coding-assistant",
   );
   await page.getByRole("button", { name: "发送请求", exact: true }).click();
   await expect(page.locator(".response-text")).toContainText(
-    "这条路由已成功连接",
+    "这个 Router 已成功连接",
   );
   await expect(page.locator(".playground-response")).toContainText("已完成");
   await expect(page.locator(".response-stats")).toContainText("24");
@@ -472,8 +472,8 @@ test("mobile layouts, navigation and dialog focus remain usable", async ({
     ).toBe(true);
   }
   await page.getByRole("button", { name: "打开导航" }).click();
-  await page.getByRole("link", { name: "上游服务", exact: true }).click();
-  await page.getByRole("button", { name: "添加上游", exact: true }).click();
+  await page.getByRole("link", { name: "Providers", exact: true }).click();
+  await page.getByRole("button", { name: "添加 Provider", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   for (let index = 0; index < 15; index++) await page.keyboard.press("Tab");
   expect(
@@ -576,7 +576,7 @@ test("cyberpunk palettes share typography and fit desktop and mobile pages", asy
           await page
             .locator(".route-card")
             .first()
-            .getByRole("button", { name: "编排" })
+            .getByRole("button", { name: "编辑 Router" })
             .click();
           await expect(page.getByRole("dialog")).toBeVisible();
           await page.screenshot({
@@ -674,7 +674,7 @@ test("configuration validation and masked credentials survive provider editing",
   const state = await installApi(page);
   await page.goto("/providers");
   await page
-    .getByRole("button", { name: "编辑上游 Anthropic", exact: true })
+    .getByRole("button", { name: "编辑 Provider Anthropic", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel(/API Key/)).toHaveValue("");

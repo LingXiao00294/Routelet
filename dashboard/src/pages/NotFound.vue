@@ -4,7 +4,7 @@ import EmptyState from "../ui/EmptyState.vue";
 <template>
   <section class="panel">
     <EmptyState
-      title="这里还没有路由"
+      title="页面不存在"
       description="这个页面不存在，回到工作空间继续。"
       icon="routes"
       ><RouterLink to="/" class="button primary"

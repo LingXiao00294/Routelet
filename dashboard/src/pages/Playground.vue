@@ -67,7 +67,7 @@ function processEvent(event: StreamEvent) {
     usage?: { output_tokens?: number };
   };
   if (event.event === "error" || value.type === "error")
-    throw new Error(value.error?.message ?? "上游流式响应发生错误");
+    throw new Error(value.error?.message ?? "Provider 流式响应发生错误");
   if (value.type === "message_start") {
     inputTokens.value = value.message?.usage?.input_tokens ?? null;
     outputTokens.value = value.message?.usage?.output_tokens ?? null;
@@ -196,7 +196,7 @@ onUnmounted(() => {
     <div>
       <div class="eyebrow">A LITTLE SPACE TO EXPERIMENT</div>
       <h1>请求实验室<span class="heading-dot">.</span></h1>
-      <p>把路由变成一次真实对话，直接验证你的接入。</p>
+      <p>把 Router 变成一次真实对话，直接验证你的接入。</p>
     </div>
     <span class="badge neutral"
       ><Icon name="terminal" :size="14" />POST /v1/messages</span
@@ -216,17 +216,17 @@ onUnmounted(() => {
       <form @submit.prevent="send">
         <fieldset :disabled="busy">
           <label class="field"
-            ><span>模型路由</span
+            ><span>Router</span
             ><span class="select-control">
-              <select aria-label="模型路由" v-model="model" required>
-                <option value="" disabled>选择已发布的模型路由</option>
+              <select aria-label="Router" v-model="model" required>
+                <option value="" disabled>选择已发布的 Router</option>
                 <option v-for="name in models" :key="name">{{ name }}</option>
               </select>
               <Icon name="down" :size="16" />
             </span></label
           >
           <p v-if="model && !validModel" class="text-red help">
-            此路由尚未发布或已被删除，请选择一个已发布路由。
+            此 Router 尚未发布或已被删除，请选择一个已发布 Router。
           </p>
           <label class="field"
             ><span>系统提示词 <small>可选</small></span
@@ -263,7 +263,7 @@ onUnmounted(() => {
           </div>
         </fieldset>
         <div class="request-actions">
-          <span>会产生真实上游调用与费用</span
+          <span>会产生真实 Provider 调用与费用</span
           ><button
             v-if="busy"
             type="button"
@@ -327,7 +327,7 @@ onUnmounted(() => {
           :description="
             busy
               ? '收到响应后，会实时显示在这里。'
-              : '在左侧写下消息，看看这条路由会带你去哪里。'
+              : '在左侧写下消息，看看这个 Router 会带你去哪里。'
           "
           icon="lab"
         />

@@ -76,7 +76,7 @@ onUnmounted(() => controller.abort());
           <span>费用</span><strong>{{ money(call.cost_usd, 6) }}</strong>
         </div>
         <div>
-          <span>上游尝试</span><strong>{{ call.attempt }} 次</strong>
+          <span>Provider 尝试</span><strong>{{ call.attempt }} 次</strong>
         </div>
       </div>
       <div class="detail-route">
@@ -149,7 +149,7 @@ onUnmounted(() => controller.abort());
               }}<span v-if="attempt.model"> / {{ attempt.model }}</span></strong
             >
             <p v-if="attempt.error !== undefined" class="text-red">
-              {{ attempt.error || "上游返回空错误消息" }}
+              {{ attempt.error || "Provider 返回空错误消息" }}
             </p>
           </div>
           <span class="mono muted">{{ latency(attempt.latency_ms) }}</span>

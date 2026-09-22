@@ -60,7 +60,7 @@ function apply() {
           :disabled="!!model"
           placeholder="例如 claude-sonnet-4-6"
           autofocus
-        /><small>必须与上游 API 接受的模型 ID 完全一致。</small></label
+        /><small>必须与 Provider API 接受的模型 ID 完全一致。</small></label
       >
       <div class="form-section-title">
         <h3>模型价格</h3>

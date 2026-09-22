@@ -21,12 +21,12 @@ const router = createRouter({
     {
       path: "/routes",
       component: () => import("./pages/Routes.vue"),
-      meta: { title: "路由编排", section: "管理" },
+      meta: { title: "Routers", section: "管理" },
     },
     {
       path: "/providers",
       component: () => import("./pages/Providers.vue"),
-      meta: { title: "上游服务", section: "管理" },
+      meta: { title: "Providers", section: "管理" },
     },
     {
       path: "/playground",

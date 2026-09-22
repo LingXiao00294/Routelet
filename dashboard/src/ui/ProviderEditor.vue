@@ -29,7 +29,7 @@ function apply() {
   if (!workspace.draft) return;
   const key = name.value.trim();
   if (!key) {
-    error.value = "请输入上游名称";
+    error.value = "请输入 Provider 名称";
     return;
   }
   if (!props.name && own(workspace.draft.providers, key)) {
@@ -101,7 +101,7 @@ const limits = [
 </script>
 <template>
   <Modal
-    :title="name && props.name ? '编辑上游 · ' + name : '连接一个新上游'"
+    :title="name && props.name ? '编辑 Provider · ' + name : '连接一个新 Provider'"
     eyebrow="PROVIDER CONNECTION"
     :guard="changed"
     :busy="workspace.saving"
@@ -111,14 +111,14 @@ const limits = [
       <fieldset :disabled="workspace.saving">
         <div class="form-grid">
           <label class="field full"
-            ><span>上游名称 <b>*</b></span
+            ><span>Provider 名称 <b>*</b></span
             ><input
               v-model="name"
               required
               :disabled="!!props.name"
               placeholder="例如 anthropic-primary"
               autofocus
-            /><small>用于标识连接与路由引用，创建后保持固定。</small></label
+            /><small>用于标识连接与 Router 引用，创建后保持固定。</small></label
           ><label class="field full"
             ><span>Base URL <b>*</b></span
             ><input

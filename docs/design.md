@@ -208,9 +208,9 @@ class AppConfig(BaseModel):
 - 每次尝试：调用 provider → 成功则返回 → 失败则判断是否重试
 - 全部失败返回 502 + 聚合错误
 
-关闭自动路由（sticky）时，Provider 异常保留完整上游 HTTP 错误正文、状态码和响应头元数据。Router 先记录失败并更新熔断或冷却，再抛出透传异常，由 API 返回原始正文及必要的端到端错误头；故障转移模式继续使用原有错误分类。sticky 流式请求不使用提前发送 HTTP 200 的预取超时，收到上游响应后才能确定响应状态；流内 SSE error 帧原样转发一次，仍记为失败。无上游响应的传输错误及本地拒绝继续生成 Router 错误。
+关闭自动故障转移（sticky）时，Provider 异常保留完整 Provider HTTP 错误正文、状态码和响应头元数据。Router 先记录失败并更新熔断或冷却，再抛出透传异常，由 API 返回原始正文及必要的端到端错误头；故障转移模式继续使用原有错误分类。sticky 流式请求不使用提前发送 HTTP 200 的预取超时，收到 Provider 响应后才能确定响应状态；流内 SSE error 帧原样转发一次，仍记为失败。无 Provider 响应的传输错误及本地拒绝继续生成 Router 错误。
 
-预取超时策略读取已通过配置代次校验、实际开始调用的模式，不提前读取可变配置。尚未选定上游或实际使用 sticky 时等待首块。failover 提前发送响应头后，若热重载要求重选到不同路由模式，则结束当前流并报告错误，避免进入无法兑现原始 HTTP 状态透传的 sticky 调用；已经开始的上游调用仍按其原有模式完成。
+预取超时策略读取已通过配置代次校验、实际开始调用的模式，不提前读取可变配置。尚未选定 Provider 或实际使用 sticky 时等待首块。failover 提前发送响应头后，若热重载要求重选到不同路由模式，则结束当前流并报告错误，避免进入无法兑现原始 HTTP 状态透传的 sticky 调用；已经开始的 Provider 调用仍按其原有模式完成。
 
 **错误分类：**
 
@@ -258,7 +258,7 @@ HALF_OPEN ──(探测失败)──→ OPEN
 - 429/529 (限流/过载) → 进入 Provider 短冷却，不累计熔断失败次数
 - 5xx 与瞬态连接/超时错误 → 连续失败达阈值后熔断
 
-**集成方式：** Router 在候选枚举阶段只读取熔断状态；进入 Provider 容量槽后、真实上游调用前通过 `try_acquire()` 原子领取一次性许可。HALF_OPEN 同一时刻只发出一个探测许可，成功、失败、取消与关闭都会消费或释放；许可携带代际，旧在途请求的迟到结果不会覆盖较新的熔断裁决。
+**集成方式：** Router 在候选枚举阶段只读取熔断状态；进入 Provider 容量槽后、真实 Provider 调用前通过 `try_acquire()` 原子领取一次性许可。HALF_OPEN 同一时刻只发出一个探测许可，成功、失败、取消与关闭都会消费或释放；许可携带代际，旧在途请求的迟到结果不会覆盖较新的熔断裁决。
 
 ### 4. providers/ — 适配器
 
@@ -370,7 +370,7 @@ data: {"type":"message_stop"}
 4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；完整 SSE 事件逐个校验后才转发，首个有效事件前允许故障转移，初始注释和跨数据块的半个事件不锁定 Provider；无论正常结束、发送失败还是取消都主动关闭内层流
 5. `stream: false` → `JSONResponse(routing.send(...))`
 
-流式上游正常结束时还会校验是否交付过数据事件，以及是否残留缺少结束空行的数据帧；空流和不完整帧按协议错误处理，不能关闭熔断器或写入成功记录。预取阶段及时发现时返回 HTTP 502；响应头已发送后则使用 SSE error 报告错误。
+流式 Provider 正常结束时还会校验是否交付过数据事件，以及是否残留缺少结束空行的数据帧；空流和不完整帧按协议错误处理，不能关闭熔断器或写入成功记录。预取阶段及时发现时返回 HTTP 502；响应头已发送后则使用 SSE error 报告错误。
 
 流式调用记录的职责随响应体开始消费而从端点交给包装器。预取期间取消、发送响应头失败、消费中断都提交一次取消记录；未启动响应体时由关闭回调回收已获取的资源并记录，避免依赖未启动生成器的 `finally`。
 
@@ -394,13 +394,13 @@ data: {"type":"message_stop"}
 - `cli/server.py` 创建 Router 应用，在所有 API 路由之后挂载 Dashboard，使用单个 Uvicorn 服务监听同一端口。只有监听成功后才打开浏览器，`--no-browser` 可禁用；打开失败仅提示 URL，不中止服务。
 - `dashboard.py` 使用 StaticFiles 提供构建资源，为前端历史路由返回 `index.html`。未知 API 和缺失资源仍返回 404，不会返回 SPA 页面，也不会读取静态目录外的文件。
 
-配置、统计、调用记录、Provider 与模型通过页面和现有 API 管理。程序启动前检查前端资源，缺失时给出构建提示并退出。原有应用 lifespan 仍负责初始化与关闭数据库、记录队列和上游连接，Ctrl+C 统一停止服务。
+配置、统计、调用记录、Provider 与模型通过页面和现有 API 管理。程序启动前检查前端资源，缺失时给出构建提示并退出。原有应用 lifespan 仍负责初始化与关闭数据库、记录队列和 Provider 连接，Ctrl+C 统一停止服务。
 
 ### 7. recording.py + db.py — 调用记录持久化
 
-`attempt` 在每次真正开始 Provider 调用时递增，并在配置热重载后的重新路由中继续累计；本地排队、冷却和熔断跳过不算上游调用。成功、失败和取消记录共享同一请求的累计计数，未调用上游时为 `0`。
+`attempt` 在每次真正开始 Provider 调用时递增，并在配置热重载后的重新路由中继续累计；本地排队、冷却和熔断跳过不算 Provider 调用。成功、失败和取消记录共享同一请求的累计计数，未调用 Provider 时为 `0`。
 
-流式和非流式用量进入计费与记录前，共用 token 字段校验：只接受 SQLite 有符号整数范围内的非负整数，排除布尔值，忽略其他值和非对象 usage。有效字段独立保留；非流式上游响应正文不受此校验修改。
+流式和非流式用量进入计费与记录前，共用 token 字段校验：只接受 SQLite 有符号整数范围内的非负整数，排除布尔值，忽略其他值和非对象 usage。有效字段独立保留；非流式 Provider 响应正文不受此校验修改。
 
 统计查询通常使用 SQLite 原生 `SUM`；遇到明确的整数溢出时，仅将 token 聚合替换为 Python 大整数聚合重试，保留分组、筛选及全空值语义。单次费用先按每百万 token 缩放价格，避免乘法中间值溢出；持久化费用或汇总费用非有限时，公开 API 将该费用表示为 `null`，面板显示 `—`，数据库原值保持不变。
 
@@ -512,7 +512,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 
 Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/health` 和 `/v1/messages` 使用后端能力。生产静态资源随 Python 分发；开发服务器仅绑定 127.0.0.1。界面从信息架构、视觉与交互重新实现，采用独立的页面、领域逻辑、状态和基础组件。
 
-- `src/pages/`：总览、调用记录、路由编排、上游服务、请求实验室、系统设置和 404 页面。
+- `src/pages/`：总览、调用记录、Routers、Providers、请求实验室、系统设置和 404 页面。
 - `src/domain/`：后端类型、规范配置默认值、结构化模型引用、级联删除、发布校验、日期 / 金额 / CSV 辅助函数。
 - `src/state/`：完整配置快照与内存草稿、监控批次、通知。配置不写入 localStorage，只有主题偏好保存在浏览器。
 - `src/services/`：支持超时与取消的 HTTP 客户端、按完整事件解码的 SSE 缓冲器。
@@ -521,15 +521,15 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 总览区分累计指标和局部趋势窗口；SVG 图表通过 ResizeObserver 保持窄屏标签可读，并提供可展开的每日数据表。模型身份在内部始终使用独立 Provider / model 字段，名称中的斜杠不参与解析。调用记录查询使用 URL 筛选、取消与请求代次检查，旧请求不能修改新的筛选结果或页码。
 
-配置以一次完整 GET 读取 Provider、模型、Router 和 Server，统一编辑内存草稿。发布前读取并比较服务器快照，再提交整个候选配置；本地更新期间禁止重复发布。密钥保留、可选价格与零价格遵循后端契约。删除模型或上游同步清理候选引用及 pin，保留剩余顺序，空路由一起删除。发布成功后的重新读取失败不会把已经提交的修改标为未保存，也不会在状态中保留新输入的明文密钥。
+配置以一次完整 GET 读取 Provider、模型、Router 和 Server，统一编辑内存草稿。发布前读取并比较服务器快照，再提交整个候选配置；本地更新期间禁止重复发布。密钥保留、可选价格与零价格遵循后端契约。删除模型或 Provider 同步清理候选引用及 pin，保留剩余顺序，空 Router 一起删除。发布成功后的重新读取失败不会把已经提交的修改标为未保存，也不会在状态中保留新输入的明文密钥。
 
 前端的冲突检查是尽力保护，不替代服务端 compare-and-swap：GET 与 PUT 之间仍有并发窗口，脱敏后的密钥也无法表达完整版本。当前后端接口未引入版本或 ETag。
 
 监控批次以 `Promise.allSettled` 分别结算端点，成功项独立更新、失败项保留旧值并列出原因；只有 `/health` 决定服务连接状态。
 
-请求实验室仅使用已发布配置，发送按钮直接调用同源 Anthropic Messages API。它支持流式 UTF-8 解码、跨网络块 SSE、原始事件查看、中止和完整结束事件检查；异常流会显示失败而非误报完成。不执行自动上游探测或示例请求。
+请求实验室仅使用已发布配置，发送按钮直接调用同源 Anthropic Messages API。它支持流式 UTF-8 解码、跨网络块 SSE、原始事件查看、中止和完整结束事件检查；异常流会显示失败而非误报完成。不执行自动 Provider 探测或示例请求。
 
-弹窗使用原生 showModal 实现焦点约束，支持 Esc、遮罩关闭、编辑放弃确认、滚动锁定与焦点恢复。页面支持快捷搜索、键盘调整路由顺序、明暗主题和移动端导航。
+弹窗使用原生 showModal 实现焦点约束，支持 Esc、遮罩关闭、编辑放弃确认、滚动锁定与焦点恢复。页面支持快捷搜索、键盘调整 Router 候选顺序、明暗主题和移动端导航。
 
 浏览器测试使用隔离的模拟 API，不接触真实 Provider 或凭据。配置与展示领域测试使用 bun:test；Playwright 覆盖从空配置接入到发布、跨页面草稿、冲突 / 失败、筛选并发、请求实验室和响应式布局。详见 [Dashboard 说明](dashboard.md)。
 
@@ -584,7 +584,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | 环境变量未设置 | `agent-router` 可启动；路由时跳过对应 provider；严格配置解析仍失败 |
 | provider 返回非 JSON | 不可重试，立即返回 502 |
 | 流传输中断 | 关闭客户端连接，日志记录 |
-| 客户端断开 | 取消上游请求 (asyncio.CancelledError) |
+| 客户端断开 | 取消 Provider 请求 (asyncio.CancelledError) |
 | 请求体过大 (>50MB) | 413 |
 | SIGTERM | 优雅关闭：停止接收新请求，等待进行中请求完成 (30s 超时) |
 
@@ -596,7 +596,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | --- | --- | --- |
 | 1 | pyproject.toml 依赖 + 目录结构 | - |
 | 2 | config.py (TOML 加载 + Pydantic 校验) | 合法/非法配置、环境变量插值、缺失变量报错 |
-| 3 | providers/base.py + providers/anthropic_compat.py | mock 上游，验证直通和 header 替换 |
+| 3 | providers/base.py + providers/anthropic_compat.py | mock Provider，验证直通和 header 替换 |
 | 4 | routing.py (优先级链 + 故障转移) | 成功/429/5xx/超时/全部失败 各场景 |
 | 5 | app.py + main.py (FastAPI + 入口) | /health /v1/models /v1/messages |
 | 6 | monitoring.py (结构化日志) | 日志级别、request_id 串联 |

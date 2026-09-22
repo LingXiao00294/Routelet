@@ -207,7 +207,7 @@ class TestAnthropicCompatProvider:
 
     @pytest.mark.asyncio
     async def test_send_stream_requests_identity_encoding(self):
-        """流式上游请求禁用压缩，避免 SSE 在解压层被聚合后才下发。"""
+        """流式 Provider 请求禁用压缩，避免 SSE 在解压层被聚合后才下发。"""
         seen: dict[str, object] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:

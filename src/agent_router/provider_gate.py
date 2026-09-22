@@ -27,7 +27,7 @@ class ProviderCapacityError(Exception):
 
 
 class ProviderCooldownError(Exception):
-    """Provider 处于短冷却（上游限流/过载）."""
+    """Provider 处于短冷却（Provider 限流/过载）."""
 
     def __init__(self, provider: str, retry_after: float) -> None:
         self.provider = provider

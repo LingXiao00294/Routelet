@@ -17,7 +17,7 @@ defineEmits<{ select: [id: string] }>();
       <thead>
         <tr>
           <th>请求 / 时间</th>
-          <th>模型路由</th>
+          <th>Router</th>
           <th>状态</th>
           <th class="numeric">耗时</th>
           <th v-if="!compactView" class="numeric">Token</th>
@@ -46,7 +46,7 @@ defineEmits<{ select: [id: string] }>();
               >{{
                 call.provider_name && call.provider_model
                   ? call.provider_name + " / " + call.provider_model
-                  : "未选中上游"
+                  : "未选中 Provider"
               }}</span
             >
           </td>

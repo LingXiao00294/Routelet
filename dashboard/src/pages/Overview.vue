@@ -26,7 +26,7 @@ const modelRows = computed(() =>
         .map((row) => ({
           ...row,
           name: row.virtual_model,
-          detail: "虚拟模型",
+          detail: "Router",
           query: { model: row.virtual_model },
         }))
     : telemetry.realModels.slice(0, 5).map((row) => ({
@@ -117,10 +117,10 @@ const cards = computed(() => {
   <div v-if="workspace.base && !configured" class="onboarding-banner">
     <div>
       <span class="badge green">从这里开始</span>
-      <h2>连接模型，建立你的第一条路由。</h2>
-      <p>添加上游服务 → 登记实际模型 → 编排路由 → 发布并测试</p>
+      <h2>连接模型，建立你的第一个 Router。</h2>
+      <p>添加 Provider → 登记实际模型 → 配置 Router → 发布并测试</p>
       <RouterLink to="/providers" class="button primary"
-        >连接第一个上游<Icon name="arrow" :size="16"
+        >连接第一个 Provider<Icon name="arrow" :size="16"
       /></RouterLink>
     </div>
     <div class="onboarding-art" aria-hidden="true">
@@ -190,7 +190,7 @@ const cards = computed(() => {
     </section>
     <section class="panel route-health">
       <div class="panel-heading">
-        <h2>路由配置</h2>
+        <h2>Router 配置</h2>
         <Icon name="routes" :size="19" />
       </div>
       <div class="health-orbit">
@@ -226,18 +226,18 @@ const cards = computed(() => {
         </svg>
         <div>
           <strong>{{ configured }}</strong
-          ><span>已配置路由</span>
+          ><span>已配置 Routers</span>
         </div>
       </div>
       <div class="health-facts">
         <span
-          ><i class="dot text-green" />{{ providers.length }} 个上游服务</span
+          ><i class="dot text-green" />{{ providers.length }} 个 Provider</span
         ><span :class="{ 'text-red': openCircuits }"
           >{{ openCircuits }} 个熔断中</span
         >
       </div>
       <RouterLink to="/routes" class="panel-bottom-link"
-        >管理模型路由<Icon name="arrow" :size="16"
+        >管理 Routers<Icon name="arrow" :size="16"
       /></RouterLink>
     </section>
   </div>
@@ -253,7 +253,7 @@ const cards = computed(() => {
             :class="{ active: modelTab === 'virtual' }"
             @click="modelTab = 'virtual'"
           >
-            虚拟模型</button
+            Router</button
           ><button
             :class="{ active: modelTab === 'real' }"
             @click="modelTab = 'real'"
@@ -305,7 +305,7 @@ const cards = computed(() => {
     <section class="panel">
       <div class="panel-heading">
         <div>
-          <h2>上游服务</h2>
+          <h2>Providers</h2>
           <p>密钥配置与当前熔断状态</p>
         </div>
         <RouterLink to="/providers" class="text-link"
@@ -350,10 +350,10 @@ const cards = computed(() => {
       <EmptyState
         v-else
         title="连接你的模型服务"
-        description="所有上游的连接和模型，都从这里管理。"
+        description="所有 Providers 的连接和模型，都从这里管理。"
         icon="providers"
         ><RouterLink to="/providers" class="button small"
-          >添加上游<Icon name="plus" :size="14" /></RouterLink
+          >添加 Provider<Icon name="plus" :size="14" /></RouterLink
       ></EmptyState>
     </section>
   </div>

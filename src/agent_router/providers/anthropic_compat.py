@@ -183,7 +183,7 @@ class AnthropicCompatProvider(BaseProvider):
         """Replace the virtual model and remove router-only metadata."""
         body = {**request_body}
         body.pop(FORWARDED_ANTHROPIC_HEADERS_KEY, None)
-        # 兼容旧的 body 内版本提示，但不把非标准字段发送给上游。
+        # 兼容旧的 body 内版本提示，但不把非标准字段发送给 Provider。
         body.pop("anthropic_version", None)
         body["model"] = self.config.model
         return body

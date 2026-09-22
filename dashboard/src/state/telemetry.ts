@@ -54,7 +54,7 @@ export const useTelemetry = defineStore("telemetry", () => {
           "健康检查",
           "汇总统计",
           "请求趋势",
-          "路由统计",
+          "Router 统计",
           "实际模型统计",
           "最近调用",
           "熔断状态",

@@ -60,7 +60,7 @@ function remove() {
   <section class="page-heading">
     <div>
       <div class="eyebrow">ONE NAME. MANY POSSIBILITIES.</div>
-      <h1>路由编排<span class="heading-dot">.</span></h1>
+      <h1>Routers<span class="heading-dot">.</span></h1>
       <p>给客户端一个稳定的名称，让模型在背后自由协作。</p>
     </div>
     <button
@@ -68,7 +68,7 @@ function remove() {
       :disabled="!actualCount || workspace.saving"
       @click="editing = ''"
     >
-      <Icon name="plus" :size="17" />新建路由
+      <Icon name="plus" :size="17" />新建 Router
     </button>
   </section>
   <div v-if="workspace.loading && !workspace.draft" class="skeleton-block" />
@@ -76,12 +76,12 @@ function remove() {
     <div class="routing-strategy">
       <span class="strategy-icon"><Icon name="routes" :size="25" /></span>
       <div>
-        <h2>自动路由</h2>
+        <h2>自动故障转移</h2>
         <p id="routing-description">
           {{
             workspace.draft.router.mode === "failover"
-              ? "上游不可用时，按候选顺序自动尝试下一个模型。"
-              : "已关闭：仅请求固定模型，报错直接返回，不尝试备用上游。"
+              ? "Provider 不可用时，按候选顺序自动尝试下一个模型。"
+              : "已关闭：仅请求固定模型，报错直接返回，不尝试备用 Provider。"
           }}
         </p>
       </div>
@@ -89,7 +89,7 @@ function remove() {
         class="routing-toggle"
         type="button"
         role="switch"
-        aria-label="自动路由"
+        aria-label="自动故障转移"
         aria-describedby="routing-description"
         :aria-checked="workspace.draft.router.mode === 'failover'"
         @click="
@@ -108,12 +108,12 @@ function remove() {
       <div class="search-input">
         <Icon name="search" :size="18" /><input
           v-model="query"
-          aria-label="搜索路由"
-          placeholder="搜索路由、模型或上游…"
+          aria-label="搜索 Router"
+          placeholder="搜索 Router、模型或 Provider…"
         />
       </div>
       <span class="muted"
-        >{{ routes.length }} 条路由 · {{ actualCount }} 个可选模型</span
+        >{{ routes.length }} 个 Router · {{ actualCount }} 个可选模型</span
       >
     </div>
     <div class="route-card-list">
@@ -124,13 +124,13 @@ function remove() {
       >
         <div class="route-card-heading">
           <span class="route-number"
-            >ROUTE {{ String(index + 1).padStart(2, "0") }}</span
+            >ROUTER {{ String(index + 1).padStart(2, "0") }}</span
           >
           <div class="route-title">
             <h2>{{ name }}</h2>
             <button
               class="icon-button small"
-              :aria-label="'复制路由名 ' + name"
+              :aria-label="'复制 Router 名 ' + name"
               @click="copyText(name)"
             >
               <Icon name="copy" :size="14" />
@@ -139,16 +139,16 @@ function remove() {
           <span class="badge neutral">{{ model.models.length }} 个候选</span>
           <div class="route-actions">
             <button class="button small" @click="editing = name">
-              <Icon name="edit" :size="14" />编排</button
+              <Icon name="edit" :size="14" />编辑 Router</button
             ><button
               class="icon-button small"
-              :aria-label="'复制路由 ' + name"
+              :aria-label="'复制 Router ' + name"
               @click="duplicate(name)"
             >
               <Icon name="copy" :size="16" /></button
             ><button
               class="icon-button small danger-hover"
-              :aria-label="'删除路由 ' + name"
+              :aria-label="'删除 Router ' + name"
               @click="removal = name"
             >
               <Icon name="trash" :size="16" />
@@ -206,7 +206,7 @@ function remove() {
           ><RouterLink
             :to="{ path: '/playground', query: { model: name } }"
             class="text-link"
-            >测试此路由<Icon name="arrowup" :size="14"
+            >测试此 Router<Icon name="arrowup" :size="14"
           /></RouterLink>
         </div>
       </article>
@@ -214,13 +214,13 @@ function remove() {
     <section v-if="!routes.length" class="panel">
       <EmptyState
         icon="routes"
-        :title="query ? '没有找到匹配的路由' : '建立你的第一条模型路由'"
+        :title="query ? '没有找到匹配的 Router' : '建立你的第一个 Router'"
         :description="
           query
             ? '尝试其他名称，或者清除搜索条件。'
             : actualCount
               ? '选择候选模型、安排顺序，给它们一个统一的调用名称。'
-              : '先添加上游服务和实际模型，再回到这里开始编排。'
+              : '先添加 Provider 和实际模型，再回到这里配置 Router。'
         "
         ><button v-if="query" class="button" @click="query = ''">
           清除搜索</button
@@ -229,9 +229,9 @@ function remove() {
           class="button primary"
           @click="editing = ''"
         >
-          新建路由<Icon name="plus" :size="16" /></button
+          新建 Router<Icon name="plus" :size="16" /></button
         ><RouterLink v-else to="/providers" class="button primary"
-          >前往上游服务<Icon name="arrow" :size="16" /></RouterLink
+          >前往 Providers<Icon name="arrow" :size="16" /></RouterLink
       ></EmptyState>
     </section>
   </fieldset>
@@ -240,10 +240,10 @@ function remove() {
     :name="editing || undefined"
     @close="editing = null"
   />
-  <Modal v-if="removal" title="删除这条路由？" @close="removal = ''"
+  <Modal v-if="removal" title="删除这个 Router？" @close="removal = ''"
     ><p>
       将从草稿中删除 <strong>{{ removal }}</strong
-      >。发布后，客户端将无法再使用这个虚拟模型名称调用。
+      >。发布后，客户端将无法再使用这个 Router 名称调用。
     </p>
     <template #footer
       ><button class="button" @click="removal = ''">取消</button

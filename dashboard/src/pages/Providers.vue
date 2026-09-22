@@ -63,7 +63,7 @@ async function resetCircuit() {
       "/api/circuit-breaker/" + encodeURIComponent(reset.value) + "/reset",
       { method: "POST" },
     );
-    notify("熔断状态已重置，下次请求将重新尝试该上游");
+    notify("熔断状态已重置，下次请求将重新尝试该 Provider");
     reset.value = "";
     await telemetry.refresh();
   } catch (error) {
@@ -77,7 +77,7 @@ async function resetCircuit() {
   <section class="page-heading">
     <div>
       <div class="eyebrow">BRING YOUR OWN MODELS</div>
-      <h1>上游服务<span class="heading-dot">.</span></h1>
+      <h1>Providers<span class="heading-dot">.</span></h1>
       <p>连接、模型、价格，一处管理。</p>
     </div>
     <button
@@ -85,19 +85,19 @@ async function resetCircuit() {
       :disabled="!workspace.draft || workspace.saving"
       @click="providerEdit = ''"
     >
-      <Icon name="plus" :size="17" />添加上游
+      <Icon name="plus" :size="17" />添加 Provider
     </button>
   </section>
   <div class="page-toolbar">
     <div class="search-input">
       <Icon name="search" :size="18" /><input
         v-model="query"
-        aria-label="搜索上游或模型"
-        placeholder="搜索上游、地址或模型…"
+        aria-label="搜索 Provider 或模型"
+        placeholder="搜索 Provider、地址或模型…"
       />
     </div>
     <span class="muted"
-      >{{ providers.length }} 个上游 ·
+      >{{ providers.length }} 个 Provider ·
       {{
         Object.values(workspace.draft?.providers ?? {}).reduce(
           (sum, provider) => sum + Object.keys(provider.models).length,
@@ -124,7 +124,7 @@ async function resetCircuit() {
         </div>
         <button
           class="icon-button"
-          :aria-label="'编辑上游 ' + name"
+          :aria-label="'编辑 Provider ' + name"
           @click="providerEdit = name"
         >
           <Icon name="edit" :size="17" />
@@ -162,7 +162,7 @@ async function resetCircuit() {
         <span
           ><i class="dot" />{{
             telemetry.circuits[name] === "open"
-              ? "熔断中，暂时跳过此上游"
+              ? "熔断中，暂时跳过此 Provider"
               : "半开状态，等待恢复探测"
           }}</span
         ><button class="text-link" @click="reset = name">重置</button>
@@ -201,15 +201,15 @@ async function resetCircuit() {
           </button>
         </div>
       </div>
-      <div v-else class="catalog-empty">还没有模型，登记后即可用于路由。</div>
+      <div v-else class="catalog-empty">还没有模型，登记后即可用于 Router。</div>
       <div class="provider-card-foot">
         <button class="text-link" @click="modelEdit = { provider: name }">
           <Icon name="plus" :size="15" />添加模型</button
         ><span
-          >{{ affectedRoutes(workspace.draft!, name).length }} 条路由引用</span
+          >{{ affectedRoutes(workspace.draft!, name).length }} 个 Router 引用</span
         ><button
           class="icon-button small danger-hover"
-          :aria-label="'删除上游 ' + name"
+          :aria-label="'删除 Provider ' + name"
           @click="removal = { provider: name }"
         >
           <Icon name="trash" :size="15" />
@@ -222,29 +222,29 @@ async function resetCircuit() {
       @click="providerEdit = ''"
     >
       <span><Icon name="plus" :size="26" /></span><strong>连接更多可能</strong>
-      <p>添加一个 Anthropic 兼容上游</p>
+      <p>添加一个 Anthropic 兼容 Provider</p>
     </button>
   </fieldset>
   <section v-if="workspace.draft && !providers.length" class="panel">
     <EmptyState
       icon="providers"
-      :title="query ? '没有找到匹配的上游' : '你的模型，从这里连接'"
+      :title="query ? '没有找到匹配的 Provider' : '你的模型，从这里连接'"
       :description="
         query
-          ? '尝试搜索上游名称、地址或实际模型。'
-          : '添加 API 地址和密钥，登记可用模型，即可开始编排。'
+          ? '尝试搜索 Provider 名称、地址或实际模型。'
+          : '添加 API 地址和密钥，登记可用模型，即可配置 Router。'
       "
       ><button
         class="button primary"
         @click="query ? (query = '') : (providerEdit = '')"
       >
-        {{ query ? "清除搜索" : "添加第一个上游"
+        {{ query ? "清除搜索" : "添加第一个 Provider"
         }}<Icon name="plus" :size="16" /></button
     ></EmptyState>
   </section>
   <div class="info-strip">
     <Icon name="shield" :size="18" /><span
-      >连接状态仅表示密钥与熔断配置。要确认上游实际可用，请在请求实验室发起测试。</span
+      >连接状态仅表示密钥与熔断配置。要确认 Provider 实际可用，请在请求实验室发起测试。</span
     >
   </div>
   <ProviderEditor
@@ -260,7 +260,7 @@ async function resetCircuit() {
   />
   <Modal
     v-if="removal"
-    :title="removal.model ? '删除实际模型？' : '删除上游服务？'"
+    :title="removal.model ? '删除实际模型？' : '删除 Provider？'"
     @close="removal = null"
     ><p>
       将从草稿中删除
@@ -270,10 +270,10 @@ async function resetCircuit() {
       >。
     </p>
     <div v-if="impacted.length" class="alert warning">
-      <strong>将清理 {{ impacted.length }} 条路由中的对应引用</strong>
+      <strong>将清理 {{ impacted.length }} 个 Router 中的对应引用</strong>
       <p>{{ impacted.join("、") }}</p>
       <p>
-        没有剩余候选的路由会一起删除；固定模型失效时，将选择第一个剩余候选。
+        没有剩余候选的 Router 会一起删除；固定模型失效时，将选择第一个剩余候选。
       </p>
     </div>
     <p class="help">检查并发布后才会影响正在运行的配置。</p>
@@ -286,13 +286,13 @@ async function resetCircuit() {
   >
   <Modal
     v-if="reset"
-    title="重置上游熔断状态？"
+    title="重置 Provider 熔断状态？"
     :busy="resetting"
     @close="reset = ''"
     ><p>
       将立即重置
       <strong>{{ reset }}</strong>
-      的熔断状态。下次调用会重新尝试该上游，此操作直接作用于运行时。
+      的熔断状态。下次调用会重新尝试该 Provider，此操作直接作用于运行时。
     </p>
     <template #footer
       ><button class="button" :disabled="resetting" @click="reset = ''">

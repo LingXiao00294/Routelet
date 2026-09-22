@@ -434,7 +434,7 @@ class Router:
         """非流式路由: 返回第一个成功 provider 的响应 JSON.
 
         outcome 可选字典，成功时写入最终 provider、模型、URL 和价格信息。
-        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        attempt 只统计真正开始的 Provider 调用，在失败及热重载重选后仍累计保留。
         """
         outcome = outcome if outcome is not None else {}
         outcome["attempt"] = 0
@@ -601,7 +601,7 @@ class Router:
         """流式路由: 返回第一个成功 provider 的 SSE 流.
 
         outcome 可选字典，开始调用时写入 provider、模型、URL 和价格信息。
-        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        attempt 只统计真正开始的 Provider 调用，在失败及热重载重选后仍累计保留。
         每个 SSE 事件完整校验后才交付，首个事件前的错误仍允许故障转移。
         """
         outcome = outcome if outcome is not None else {}
@@ -1025,7 +1025,7 @@ class AllProvidersFailedError(Exception):
 
 
 class NoProviderAvailableError(Exception):
-    """本地容量耗尽或上游限流导致无可用 provider."""
+    """本地容量耗尽或 Provider 限流导致无可用 provider."""
 
     def __init__(
         self,
@@ -1039,7 +1039,7 @@ class NoProviderAvailableError(Exception):
         self.errors = errors
         self.kind = kind
         self.retry_after = retry_after
-        label = "本地容量不足" if kind == "capacity" else "上游限流"
+        label = "本地容量不足" if kind == "capacity" else "Provider 限流"
         summary = "; ".join(
             f"[{e['provider']}:{e['model']}] {e['error']}" for e in errors
         )

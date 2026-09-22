@@ -85,7 +85,7 @@ export const useWorkspace = defineStore("workspace", () => {
       // Clear plaintext secrets immediately, even if the read after a committed write fails.
       base.value = redactKeys(candidate);
       draft.value = clone(base.value);
-      notify("配置已发布，新的路由规则已生效");
+      notify("配置已发布，新的 Router 规则已生效");
       try {
         const saved = normalizeConfig(
           await request<Partial<Config>>("/api/config"),

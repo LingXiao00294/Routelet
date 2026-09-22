@@ -126,7 +126,7 @@ export function sampleCalls(): Call[] {
       messages: [{ role: "user", content: "这是用于验证界面的模拟请求。" }],
     }),
     response_body: JSON.stringify({
-      content: [{ type: "text", text: "模拟响应：路由已成功连接。" }],
+      content: [{ type: "text", text: "模拟响应：Router 已成功连接。" }],
     }),
     failover_details: JSON.stringify([
       null,
@@ -329,7 +329,7 @@ export async function installApi(page: Page, empty = false) {
       },
       {
         type: "content_block_delta",
-        delta: { type: "text_delta", text: "这条路由已成功连接。" },
+        delta: { type: "text_delta", text: "这个 Router 已成功连接。" },
       },
       { type: "message_delta", usage: { output_tokens: 24 } },
       { type: "message_stop" },

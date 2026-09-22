@@ -227,11 +227,11 @@ function apply() {
   if (!workspace.draft) return;
   const key = name.value.trim();
   if (!key) {
-    error.value = "请输入路由名称";
+    error.value = "请输入 Router 名称";
     return;
   }
   if (key !== props.name && own(workspace.draft.models, key)) {
-    error.value = "该路由名称已存在";
+    error.value = "该 Router 名称已存在";
     return;
   }
   if (!form.value.models.length) {
@@ -249,8 +249,8 @@ function apply() {
 </script>
 <template>
   <Modal
-    :title="props.name ? '编辑模型路由' : '建立新的模型路由'"
-    eyebrow="ROUTE BUILDER"
+    :title="props.name ? '编辑 Router' : '建立新的 Router'"
+    eyebrow="ROUTER BUILDER"
     :guard="changed"
     wide
     @close="$emit('close')"
@@ -260,7 +260,7 @@ function apply() {
       @keydown.esc.capture="cancelWithEscape"
     >
       <label class="field"
-        ><span>虚拟模型名称 <b>*</b></span
+        ><span>Router 名称 <b>*</b></span
         ><input
           v-model="name"
           placeholder="例如 coding-assistant"
@@ -390,7 +390,7 @@ function apply() {
               {{
                 options.length
                   ? "从实际模型目录中选择…"
-                  : "没有更多可用模型，请先在上游服务中添加"
+                  : "没有更多可用模型，请先在 Providers 中添加"
               }}
             </option>
             <optgroup v-for="group in groups" :key="group" :label="group">
@@ -412,7 +412,7 @@ function apply() {
         </button>
       </div>
       <p class="help">
-        自动路由开启时按顺序尝试候选模型；关闭时只使用标记为「已固定」的模型，报错直接返回。
+        自动故障转移开启时按顺序尝试候选模型；关闭时只使用标记为「已固定」的模型，报错直接返回。
       </p>
       <div v-if="error" class="alert error" role="alert">{{ error }}</div>
     </form>

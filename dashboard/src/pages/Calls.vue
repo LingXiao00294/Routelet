@@ -190,25 +190,25 @@ onUnmounted(() => {
   <section class="panel">
     <div class="filter-bar">
       <label class="filter-field"
-        ><span>虚拟模型</span
+        ><span>Router</span
         ><select
-          aria-label="虚拟模型"
+          aria-label="Router"
           :value="filter.model"
           @change="update('model', ($event.target as HTMLSelectElement).value)"
         >
-          <option value="">所有路由</option>
+          <option value="">所有 Routers</option>
           <option v-for="name in virtualOptions" :key="name">{{ name }}</option>
         </select></label
       ><label class="filter-field"
-        ><span>上游服务</span
+        ><span>Provider</span
         ><select
-          aria-label="上游服务"
+          aria-label="Provider"
           :value="filter.provider"
           @change="
             update('provider', ($event.target as HTMLSelectElement).value)
           "
         >
-          <option value="">所有上游</option>
+          <option value="">所有 Providers</option>
           <option v-for="name in providerOptions" :key="name">
             {{ name }}
           </option>

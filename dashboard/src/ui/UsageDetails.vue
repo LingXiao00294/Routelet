@@ -49,7 +49,7 @@ const rows = computed(() => {
           :class="{ active: group === 'virtual' }"
           @click="group = 'virtual'"
         >
-          虚拟模型</button
+          Router</button
         ><button :class="{ active: group === 'real' }" @click="group = 'real'">
           实际模型
         </button>
@@ -64,14 +64,14 @@ const rows = computed(() => {
       <Icon name="search" :size="17" /><input
         v-model="query"
         aria-label="筛选用量模型"
-        placeholder="搜索模型或上游…"
+        placeholder="搜索模型或 Provider…"
       />
     </div>
     <div class="table-scroll">
       <table class="data-table">
         <thead>
           <tr>
-            <th>模型 / 上游</th>
+            <th>模型 / Provider</th>
             <th class="numeric">调用量</th>
             <th class="numeric">成功率</th>
             <th class="numeric">输入 / 输出 Token</th>

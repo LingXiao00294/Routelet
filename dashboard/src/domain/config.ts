@@ -139,9 +139,9 @@ export function validateConfig(config: Config, existing?: Config): string[] {
   if (!finite(config.router.recovery_timeout, Number.MIN_VALUE))
     errors.push("熔断恢复时间必须大于 0");
   for (const [name, provider] of Object.entries(config.providers)) {
-    if (!name.trim()) errors.push("上游名称不能为空");
+    if (!name.trim()) errors.push("Provider 名称不能为空");
     if (!provider.api_key.trim() && !own(existing?.providers ?? {}, name))
-      errors.push(name + "：新上游需要 API Key");
+      errors.push(name + "：新 Provider 需要 API Key");
     if (
       own(existing?.providers ?? {}, name) &&
       provider.api_key !== existing?.providers[name].api_key &&
@@ -197,7 +197,7 @@ export function validateConfig(config: Config, existing?: Config): string[] {
     }
   }
   for (const [name, route] of Object.entries(config.models)) {
-    if (!name.trim()) errors.push("路由名称不能为空");
+    if (!name.trim()) errors.push("Router 名称不能为空");
     if (!route.models.length) errors.push(name + "：至少选择一个候选模型");
     const refs = new Set<string>();
     for (const ref of route.models) {
@@ -224,23 +224,23 @@ export function validateConfig(config: Config, existing?: Config): string[] {
 export function changes(before: Config, after: Config): string[] {
   const result: string[] = [];
   for (const section of ["providers", "models"] as const) {
-    const label = section === "providers" ? "上游" : "路由";
+    const label = section === "providers" ? "Provider" : "Router";
     for (const name of new Set([
       ...Object.keys(before[section]),
       ...Object.keys(after[section]),
     ])) {
       if (!own(before[section], name))
-        result.push("新增" + label + " · " + name);
+        result.push("新增 " + label + " · " + name);
       else if (!own(after[section], name))
-        result.push("删除" + label + " · " + name);
+        result.push("删除 " + label + " · " + name);
       else if (
         canonical(before[section][name]) !== canonical(after[section][name])
       )
-        result.push("更新" + label + " · " + name);
+        result.push("更新 " + label + " · " + name);
     }
   }
   if (canonical(before.router) !== canonical(after.router))
-    result.push("更新路由策略与熔断设置");
+    result.push("更新 Router 策略与熔断设置");
   if (canonical(before.server) !== canonical(after.server))
     result.push("更新服务与日志设置");
   return result;

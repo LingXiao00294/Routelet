@@ -41,8 +41,8 @@ const nav = [
   { label: "运行总览", icon: "overview", path: "/", group: "工作空间" },
   { label: "调用记录", icon: "activity", path: "/calls", group: "工作空间" },
   { label: "请求实验室", icon: "lab", path: "/playground", group: "工作空间" },
-  { label: "路由编排", icon: "routes", path: "/routes", group: "管理" },
-  { label: "上游服务", icon: "providers", path: "/providers", group: "管理" },
+  { label: "Routers", icon: "routes", path: "/routes", group: "管理" },
+  { label: "Providers", icon: "providers", path: "/providers", group: "管理" },
   { label: "系统设置", icon: "settings", path: "/settings", group: "管理" },
 ];
 const endpoint = computed(() => window.location.origin + "/v1");

@@ -24,13 +24,13 @@ const items = computed(() =>
       icon: "activity",
     },
     {
-      label: "路由编排",
-      detail: "管理虚拟模型与候选顺序",
+      label: "Routers",
+      detail: "管理 Routers 与候选顺序",
       path: "/routes",
       icon: "routes",
     },
     {
-      label: "上游服务",
+      label: "Providers",
       detail: "管理连接、模型与价格",
       path: "/providers",
       icon: "providers",
@@ -49,13 +49,13 @@ const items = computed(() =>
     },
     ...Object.keys(workspace.draft?.models ?? {}).map((name) => ({
       label: name,
-      detail: "模型路由",
+      detail: "Router",
       path: "/routes?q=" + encodeURIComponent(name),
       icon: "routes",
     })),
     ...Object.keys(workspace.draft?.providers ?? {}).map((name) => ({
       label: name,
-      detail: "上游服务",
+      detail: "Provider",
       path: "/providers?q=" + encodeURIComponent(name),
       icon: "providers",
     })),
@@ -95,8 +95,8 @@ function keydown(event: KeyboardEvent) {
       <div class="search-input command-input">
         <Icon name="search" /><input
           v-model="query"
-          aria-label="搜索页面、模型或上游"
-          placeholder="搜索页面、模型或上游…"
+          aria-label="搜索页面、Router 或 Provider"
+          placeholder="搜索页面、Router 或 Provider…"
           autofocus
           @input="selected = 0"
         />

@@ -125,7 +125,7 @@ def _allow_bind(host: str, allow_remote: bool) -> bool:
         return True
     warning = (
         f"监听地址 {host!r} 可被远程访问；服务没有内置鉴权，"
-        "会暴露调用正文、配置写入和上游调用能力"
+        "会暴露调用正文、配置写入和 Provider 调用能力"
     )
     if not allow_remote:
         print(

@@ -106,7 +106,7 @@ _REQUEST_ID_MAX_LEN = 128
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # 与设计文档公开契约一致；流式读取会在超过上限的首个 chunk 立即停止，
-# 避免超大正文先完整进入内存、上游调用和持久化队列。
+# 避免超大正文先完整进入内存、Provider 调用和持久化队列。
 _MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024
 _FORWARDED_ANTHROPIC_HEADERS = ("anthropic-version", "anthropic-beta")
 
@@ -286,7 +286,7 @@ def create_app(
         try:
             if is_stream:
                 outcome: dict = {}
-                # sticky 等待上游响应，保留错误 HTTP 状态；failover 有界预取，
+                # sticky 等待 Provider 响应，保留错误 HTTP 状态；failover 有界预取，
                 # 超时则先返回 SSE 头，继续在响应体中等待首字节。
                 stream_agen: AsyncGenerator[bytes, None] = engine.route_stream(
                     upstream_body, outcome
@@ -327,7 +327,7 @@ def create_app(
                     # 从此处开始由 _stream_wrapper 负责记录最终结果。
                     recording_claimed = True
                     # 客户端中途断开时必须 aclose 预取的 generator，
-                    # 否则 ProviderGate.slot / 上游响应会一直占用到 GC。
+                    # 否则 ProviderGate.slot / Provider 响应会一直占用到 GC。
                     try:
                         chunk = first_chunk
                         if pending_first is not None:
@@ -701,10 +701,10 @@ async def _prefetch_first_chunk(
     timeout: float | None = None,
     routing_outcome: dict | None = None,
 ) -> tuple[bytes | None, asyncio.Task[bytes] | None]:
-    """有界预取流式首 chunk，超时不取消上游任务.
+    """有界预取流式首 chunk，超时不取消 Provider 任务.
 
     ``timeout`` 默认读取模块常量（调用时求值，便于测试 monkeypatch）。
-    仅实际开始的 failover 尝试可提前发送 SSE 头；sticky 或尚未选定上游时
+    仅实际开始的 failover 尝试可提前发送 SSE 头；sticky 或尚未选定 Provider 时
     等待首块，避免惰性迭代或热重载使预取策略与路由模式不一致。
     返回前调用方若取消或发生异常，负责取消并等待预取任务，然后关闭源流。
 
@@ -959,7 +959,7 @@ async def _stream_wrapper(
             _update_stream_usage(usage_decoder.feed(chunk), usage, usage_events_seen)
 
             # 先更新 usage 再交付 chunk；若客户端在发送期间断开，取消记录仍能
-            # 保留这个已从上游收到的 chunk 中的 token 信息。
+            # 保留这个已从 Provider 收到的 chunk 中的 token 信息。
             yield chunk
 
         # 流成功完成
@@ -1045,7 +1045,7 @@ async def _stream_wrapper(
                 )
         finally:
             try:
-                # 即使记录失败，也必须释放上游连接与 gate slot。
+                # 即使记录失败，也必须释放 Provider 连接与 gate slot。
                 await stream.aclose()
             except Exception:
                 logger.warning(

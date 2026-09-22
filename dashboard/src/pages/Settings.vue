@@ -38,7 +38,7 @@ function exportConfig() {
         <span class="stat-icon mint"><Icon name="shield" /></span>
         <h2>全局熔断保护</h2>
         <p>
-          连续失败后暂时跳过上游，给服务恢复的时间。上游的独立设置优先于全局配置。
+          连续失败后暂时跳过 Provider，给服务恢复的时间。Provider 的独立设置优先于全局配置。
         </p>
       </div>
       <div class="panel settings-form">
@@ -70,7 +70,7 @@ function exportConfig() {
         >
         <div class="info-strip">
           <Icon name="shield" :size="17" /><span
-            >401 / 403 会立即熔断；429 / 529 使用上游限流冷却。</span
+            >401 / 403 会立即熔断；429 / 529 使用 Provider 限流冷却。</span
           >
         </div>
       </div>

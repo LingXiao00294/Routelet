@@ -1393,7 +1393,7 @@ class TestMessages:
                 "messages": [{"role": "user", "content": "hello"}],
             },
         )
-        # 预期 502 因为 api key 是假的, 或者 401 从上游透传
+        # 预期 502 因为 api key 是假的, 或者 401 从 Provider 透传
         assert resp.status_code in (401, 502)
 
     async def test_non_stream_success_survives_record_failure(
