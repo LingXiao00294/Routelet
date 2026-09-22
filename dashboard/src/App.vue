@@ -100,14 +100,12 @@ async function discard() {
     <aside class="sidebar">
       <RouterLink to="/" class="brand" aria-label="Agent Router 首页"
         ><span class="brand-mark"
-          ><svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
-            <path
-              d="M7 9h8c5 0 6 15 13 15h12 M7 39h8c5 0 6-15 13-15 M33 17l8 7-8 7"
-              stroke="currentColor"
-              stroke-width="5.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            /></svg></span
+          ><img
+            src="/logo-mechanical-r.png"
+            alt=""
+            width="40"
+            height="40"
+          /></span
         ><span
           >agent<span class="brand-light">router</span
           ><small>LOCAL AI GATEWAY</small></span

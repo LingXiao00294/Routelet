@@ -217,10 +217,13 @@ onUnmounted(() => {
         <fieldset :disabled="busy">
           <label class="field"
             ><span>模型路由</span
-            ><select aria-label="模型路由" v-model="model" required>
-              <option value="" disabled>选择已发布的模型路由</option>
-              <option v-for="name in models" :key="name">{{ name }}</option>
-            </select></label
+            ><span class="select-control">
+              <select aria-label="模型路由" v-model="model" required>
+                <option value="" disabled>选择已发布的模型路由</option>
+                <option v-for="name in models" :key="name">{{ name }}</option>
+              </select>
+              <Icon name="down" :size="16" />
+            </span></label
           >
           <p v-if="model && !validModel" class="text-red help">
             此路由尚未发布或已被删除，请选择一个已发布路由。

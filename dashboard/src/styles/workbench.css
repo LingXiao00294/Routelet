@@ -429,11 +429,11 @@ small {
   margin-top: 6px;
 }
 .brand-mark {
-  width: 31px;
+  width: 40px;
   flex-shrink: 0;
   color: var(--accent);
 }
-.brand-mark svg {
+.brand-mark img {
   display: block;
   width: 100%;
   height: auto;
@@ -2142,18 +2142,21 @@ kbd {
   gap: 10px;
   margin: 14px 0;
 }
-.candidate-select {
+.candidate-select,
+.select-control {
   position: relative;
   flex: 1;
   min-width: 0;
 }
-.candidate-select select {
+.candidate-select select,
+.select-control select {
   height: 100%;
   appearance: none;
   padding-right: 42px;
   font-size: 13px;
 }
-.candidate-select > svg {
+.candidate-select > svg,
+.select-control > svg {
   position: absolute;
   right: 14px;
   top: 50%;

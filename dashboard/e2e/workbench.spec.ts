@@ -367,6 +367,37 @@ test("remote conflict blocks writes and failed writes preserve drafts", async ({
   );
 });
 
+test("playground select chevron stays inset and centered in both themes and viewport sizes", async ({
+  page,
+}) => {
+  await installApi(page);
+  for (const theme of ["light", "dark"]) {
+    await page.addInitScript(
+      (value) => localStorage.setItem("ar-theme", value),
+      theme,
+    );
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/playground");
+      await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+      const select = page.getByLabel("模型路由", { exact: true });
+      await expect(select).toHaveValue("coding-assistant");
+      await expect(select).toHaveCSS("appearance", "none");
+      const arrow = page.locator(".select-control > svg");
+      await expect(arrow).toHaveCSS("pointer-events", "none");
+      const field = await select.boundingBox();
+      const icon = await arrow.boundingBox();
+      if (!field || !icon) throw new Error("Missing playground select geometry");
+      expect(field.x + field.width - icon.x - icon.width).toBeCloseTo(14, 0);
+      expect(icon.y + icon.height / 2).toBeCloseTo(field.y + field.height / 2, 0);
+      await page.screenshot({
+        path: `test-results/playground-select-${theme}-${width}.png`,
+        fullPage: true,
+      });
+    }
+  }
+});
+
 test("playground handles both streamed and JSON responses", async ({
   page,
 }) => {

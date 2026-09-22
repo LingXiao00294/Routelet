@@ -96,12 +96,6 @@ h3 {
 .brand-light {
   font-weight: 400;
 }
-.brand-mark {
-  color: var(--accent);
-  filter: drop-shadow(
-    2px 1px 0 color-mix(in srgb, var(--pink) 40%, transparent)
-  );
-}
 .brand small {
   font-size: 9px;
   letter-spacing: 1.5px;
