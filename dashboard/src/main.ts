@@ -57,6 +57,6 @@ const router = createRouter({
   ],
 });
 router.afterEach((to) => {
-  document.title = String(to.meta.title) + " · Agent Router";
+  document.title = String(to.meta.title) + " · Routelet";
 });
 createApp(App).use(createPinia()).use(router).mount("#app");

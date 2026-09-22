@@ -1,11 +1,11 @@
-# Agent Router
+# Routelet
 
 本地 LLM API 路由代理，将虚拟模型名映射到多个 provider，按优先级进行故障转移。
 
 ``` text
-Claude Code → router (本地 FastAPI) → 智谱 API      (优先级 1)
-                                    → 火山引擎      (优先级 2, 故障转移)
-                                    → DeepSeek      (优先级 3, 故障转移)
+Agent → Routelet → Provider A    (优先级 1)
+                → Provider B    (优先级 2, 故障转移)
+                → Provider C    (优先级 3, 故障转移)
 ```
 
 ## 快速开始
@@ -23,60 +23,50 @@ uv tool install .
 以后只需一个命令：
 
 ```bash
-agent-router
+routelet
 ```
 
 程序在同一个进程、同一个端口提供 API 和 Dashboard，并在监听成功后自动打开 `http://127.0.0.1:9456`。首次运行会在当前目录创建空的 `config.toml`，可直接在页面添加 Provider、实际模型和虚拟模型，再连接客户端。已有配置不会被覆盖；格式错误时启动失败并显示原因。按 `Ctrl+C` 同时停止前后端服务。
 
-源码开发也可使用 `uv sync --frozen` 后执行 `uv run agent-router`。安装包包含构建好的前端，使用时无需 Node.js / Bun。如果命令不在 PATH 中，运行 `uv tool update-shell` 后重开终端。
+源码开发也可使用 `uv sync --frozen` 后执行 `uv run routelet`。安装包包含构建好的前端，使用时无需 Node.js / Bun。如果命令不在 PATH 中，运行 `uv tool update-shell` 后重开终端。
 
 ## 启动选项
 
 ```bash
-agent-router --help
-agent-router --no-browser                    # 无桌面环境或不自动打开浏览器
-agent-router -c config.toml --db calls.db     # 指定配置和数据库
-agent-router --host 127.0.0.1 --port 9457     # 同时更改 API 与页面的监听地址
-agent-router --env-file custom.env           # 默认加载当前目录的 .env
-agent-router --no-env-file                   # 不加载环境变量文件
-agent-router --dist dashboard/dist          # 指定前端构建目录
+routelet --help
+routelet --no-browser                  # 无桌面环境或不自动打开浏览器
+routelet -c config.toml --db calls.db   # 指定配置和数据库
+routelet --host 127.0.0.1 --port 9457  # 同时更改 API 与页面的监听地址
+routelet --env-file custom.env         # 默认加载当前目录的 .env
+routelet --no-env-file                 # 不加载环境变量文件
+routelet --dist dashboard/dist         # 指定前端构建目录
 ```
 
-配置、调用记录、统计、Provider 和模型统一通过 Dashboard 管理。旧的 `serve`、`dashboard`、`config`、`models`、`providers`、`calls`、`stats`、`doctor` 子命令和 `agent-router-dashboard` 入口已移除；已有启动脚本应改为 `agent-router`。重新执行 `uv tool install --force .` 可更新本地安装。
+配置、调用记录、统计、Provider 和模型统一通过 Dashboard 管理，统一启动命令为 `routelet`。重新执行 `uv tool install --force .` 可更新本地安装。
+
+更名前已安装的工具需要重新安装，并将启动脚本改为 `routelet`，Python 导入改为 `routelet`。首次运行默认写入 `logs/routelet.log`；已有配置中的显式日志路径继续生效，可在系统设置中修改。浏览器使用新的主题偏好键，首次打开会使用浅色主题。
 
 配置、数据库、日志和 `.env` 的默认路径均相对于启动目录，建议始终在固定目录启动。未解析的 `${ENV_VAR}` 不阻止页面启动，但实际请求会跳过对应 Provider。没有可用模型时，请先在页面完成配置。
 
-未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/agent_router-0.1.0-py3-none-any.whl` 安装。`config.toml.example` 仍可作为手工配置参考，首次启动自动生成的是空配置。
+未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/routelet-0.1.0-py3-none-any.whl` 安装。`config.toml.example` 仍可作为手工配置参考，首次启动自动生成的是空配置。
 
 ## 安全边界
 
-Router 不校验客户端传入的 Anthropic token，Dashboard 还能读取调用详情、修改配置和重置熔断器；`calls.db` 会保存请求与响应正文（单项超过 256 KiB 时保存带 `_truncated` 标记的有界预览），其中仍可能包含提示词、模型输出和其他敏感数据。请限制配置文件、数据库、日志及备份的文件权限，并按自身保留策略清理。
+Routelet 不校验客户端传入的 token，Dashboard 还能读取调用详情、修改配置和重置熔断器；`calls.db` 会保存请求与响应正文（单项超过 256 KiB 时保存带 `_truncated` 标记的有界预览），其中仍可能包含提示词、模型输出和其他敏感数据。请限制配置文件、数据库、日志及备份的文件权限，并按自身保留策略清理。
 
 默认拒绝绑定 `0.0.0.0`、`::` 或其他非回环地址。只有在受信网络或已配置鉴权与 TLS 的反向代理之后，才应显式添加 `--allow-remote`；该开关只确认风险，不会为服务增加鉴权。
 
-### 配合 Claude Code 使用
+### 连接客户端
 
-修改 `~/.claude/settings.json`，添加以下配置将 Claude Code 的 API 请求指向本地路由代理：
+在支持 Messages API 的客户端中，将 API 基础地址设置为 `http://127.0.0.1:9456`，模型设置为 Dashboard 中创建的 Router 名称，例如 `reasoning-route`、`coding-route` 或 `fast-route`。具体设置项或环境变量名称由客户端决定。
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:9456",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_MODEL": "opus-router",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-router",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-router",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-router",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "opus-router"
-  }
-}
-```
-
-> **注意**：`ANTHROPIC_AUTH_TOKEN` 可以设为任意非空值（如 `dummy`），router 不会校验 token。三个 `DEFAULT_*_MODEL` 需与 `config.toml` 中定义的虚拟模型名一致。
+如果客户端要求认证 token，可填写任意非空值（如 `dummy`）。Routelet 不校验该值，实际 Provider 密钥由服务端配置管理。客户端的默认模型和子任务模型也应指向已配置的 Router。
 
 ## 配置
 
 ### config.toml
+
+完整可加载示例见 [`config.toml.example`](config.toml.example)，密钥变量见 [`.env.example`](.env.example)。下面仅展示连接与模型配置片段，合并时需保留完整示例中各 Provider 的 `type` 协议字段。示例服务地址和模型名均为占位符，使用前请换成实际值；价格仅用于说明格式。
 
 ```toml
 [server]
@@ -85,37 +75,35 @@ port = 9456
 log_level = "debug"
 
 # Provider 连接设置与实际模型目录
-[providers.zai]
-type = "anthropic"
-api_key = "${ZAI_API_KEY}"
-base_url = "https://api.z.ai/api/anthropic"
+[providers.provider-a]
+api_key = "${PROVIDER_A_API_KEY}"
+base_url = "https://api.provider-a.example"
 
-[providers.zai.models."glm-5.2"]
+[providers.provider-a.models."model-a-pro"]
 # 可选模型费用，单位 USD / 1M Token；不填的快照为 NULL，计费时按 0
 input_price_per_million = 1.4
 output_price_per_million = 4.4
 cache_read_price_per_million = 0.26
 cache_write_price_per_million = 0  # 显式 0 与未配置的 NULL 不同
 
-[providers.deepseek]
-type = "anthropic"
-api_key = "${DEEPSEEK_API_KEY}"
-base_url = "https://api.deepseek.com/anthropic"
+[providers.provider-b]
+api_key = "${PROVIDER_B_API_KEY}"
+base_url = "https://api.provider-b.example"
 
-[providers.deepseek.models."deepseek-v4-pro"]
+[providers.provider-b.models."model-b-pro"]
 
 # 虚拟模型只保存有序的结构化引用；数组顺序就是路由优先级
-[models.opus-router]
-pinned_model = { provider = "zai", model = "glm-5.2" }
+[models.reasoning-route]
+pinned_model = { provider = "provider-a", model = "model-a-pro" }
 models = [
-  { provider = "zai", model = "glm-5.2" },
-  { provider = "deepseek", model = "deepseek-v4-pro" },
+  { provider = "provider-a", model = "model-a-pro" },
+  { provider = "provider-b", model = "model-b-pro" },
 ]
 ```
 
-`${ENV_VAR}` 会自动从环境变量或 `.env` 文件展开。未设置时不会阻止 `agent-router` 启动，方便先打开 dashboard 修改配置；包含未解析 key 的 provider 在实际请求路由时会被跳过，全部 provider 都不可用时返回明确错误。支持 `type = "anthropic"`（Anthropic Messages API 兼容 provider）。
+`${ENV_VAR}` 会自动从环境变量或 `.env` 文件展开。未设置时不会阻止 `routelet` 启动，方便先打开 dashboard 修改配置；包含未解析 key 的 provider 在实际请求路由时会被跳过，全部 provider 都不可用时返回明确错误。
 
-当前版本仅实现 `anthropic` 类型。`openai` 协议转换仍在规划中；配置加载和 Dashboard 都不会再接受一个运行时无法调用的 `openai` 类型。
+当前版本仅实现 Messages API 兼容协议，`type` 的可用值以完整配置示例为准。Chat Completions 协议转换仍在规划中；配置加载和 Dashboard 会拒绝未实现的协议类型。
 
 实际模型及价格只在对应 Provider 的 `models` 目录下定义一次。虚拟模型的 `models` 数组只能引用目录中已有的 `{ provider, model }`，数组顺序会在运行时生成从 1 开始的优先级；sticky 模式还必须提供位于该数组中的结构化 `pinned_model`。同一虚拟模型不能重复引用同一个实际模型。
 
@@ -128,7 +116,7 @@ models = [
 | 方法 | 路径 | 说明 |
 | ------ | ------ | ------ |
 | `GET` | `/health` | 健康检查 |
-| `GET` | `/v1/models` | 列出虚拟模型（Anthropic 格式） |
+| `GET` | `/v1/models` | 列出虚拟模型（Messages API 兼容格式） |
 | `POST` | `/v1/messages` | 聊天接口，支持 `stream: true/false` |
 | `GET` | `/api/metrics/summary` | 调用概览统计 |
 | `GET` | `/api/metrics/by-model` | 按虚拟模型分组统计 |
@@ -144,7 +132,7 @@ models = [
 
 `POST /v1/messages` 只接受顶层为对象的有效 JSON，请求体上限为 50 MiB，包括 chunked 请求；Dashboard 与客户端直接使用同一组 API。`model` 必须是非空字符串，`stream` 若提供则必须是布尔值。超过正文上限返回 `413 invalid_request_error`，畸形 JSON、非对象 JSON 或字段类型错误返回 `400 invalid_request_error`。非有限数值（如 `NaN`、`Infinity`、溢出的浮点数）、无法编码为 UTF-8 的字符串及嵌套过深导致入口解析或编码校验失败的正文也会在路由前返回 `400`，不调用 Provider 或生成调用记录。
 
-Router 会将客户端的 `anthropic-version` 与 `anthropic-beta` 请求头转发给最终 Anthropic-compatible Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。SSE 按完整事件校验后转发，初始注释和未完成的事件不会提前锁定 Provider；首个有效事件前的可重试错误即使跨网络数据块，也仍能故障转移。已经交付事件后不会拼接另一家 Provider 的响应。流式客户端中途断开时会立即关闭 Provider 响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
+Routelet 会将客户端的协议版本与 beta 功能请求头转发给最终 Messages API 兼容 Provider；认证头始终由 Provider 配置生成，不会透传客户端 token。SSE 按完整事件校验后转发，初始注释和未完成的事件不会提前锁定 Provider；首个有效事件前的可重试错误即使跨网络数据块，也仍能故障转移。已经交付事件后不会拼接另一家 Provider 的响应。流式客户端中途断开时会立即关闭 Provider 响应并记录 `client_cancelled`，避免长期占用连接和 Provider 并发槽。
 
 `PUT /api/config` 会先完成候选配置校验、TOML 序列化验证和运行时构建，再原子替换文件并切换 Router 与日志配置；任一步失败都会保留或恢复旧文件与旧运行时。热重载时已经开始 Provider I/O 的真实在途调用可完成；尚未发起 Provider I/O 的旧代际请求（包括本地队列中的请求）会透明地按最新配置重新选择 Provider，不会把配置更新误报为容量不足，也不能用旧 URL、密钥或并发限制继续调用。删除 Provider 或实际模型时，会在同一次保存中清理候选配置里的对应引用；保留其他候选及其顺序，没有剩余候选的虚拟模型会一起删除。被删除的 `pinned_model` 会清除，sticky 模式自动改用首个剩余候选。移除引用与删除或替换目录项可一次保存，不再要求分两次提交；无关的悬空引用仍会被拒绝。
 
@@ -168,7 +156,7 @@ SSE 支持流开头的 UTF-8 BOM，包括 BOM 字节跨数据块的情况；它�
 Move-Item calls.db calls.db.pre-pricing.bak
 ```
 
-之后重新运行 `uv run agent-router -c config.toml --db calls.db`，程序会创建完整的新数据库。需要保留的旧调用历史仍在备份文件中。
+之后重新运行 `uv run routelet -c config.toml --db calls.db`，程序会创建完整的新数据库。需要保留的旧调用历史仍在备份文件中。
 
 ## Dashboard
 
@@ -203,7 +191,7 @@ bun run test:e2e              # 桌面 / 移动浏览器流程，使用模拟 AP
 bun run build                # 类型检查并构建 dashboard/dist/
 ```
 
-构建后在仓库根目录运行 `uv run agent-router`，从同一端口使用 API 和面板。也可运行 `bun run format` 统一格式化前端源码。
+构建后在仓库根目录运行 `uv run routelet`，从同一端口使用 API 和面板。也可运行 `bun run format` 统一格式化前端源码。
 
 [详细使用与实现说明](docs/dashboard.md) · [设计说明](docs/design.md)
 
@@ -223,11 +211,11 @@ uv run ty check src tests              # 类型检查
 ## 项目结构
 
 ``` text
-src/agent_router/
+src/routelet/
 ├── main.py              # console_scripts 薄入口
 ├── cli/
 │   ├── __init__.py      # 单一启动入口 main/run
-│   ├── __main__.py      # python -m agent_router.cli
+│   ├── __main__.py      # python -m routelet.cli
 │   ├── app.py           # argparse 启动选项与退出码
 │   ├── server.py        # API + Dashboard 启动，监听成功后打开浏览器
 │   └── config_io.py     # 首次运行空配置、环境变量加载
@@ -238,9 +226,7 @@ src/agent_router/
 ├── recording.py         # 有界队列 + 后台调用记录 writer
 ├── db.py                # SQLite 调用记录 (aiosqlite)
 ├── monitoring.py        # 结构化日志 (structlog)
-├── providers/
-│   ├── base.py          # 抽象 Provider 接口
-│   └── anthropic_compat.py  # Anthropic 兼容直通适配器
+├── providers/           # 抽象 Provider 接口与 Messages API 兼容直通适配器
 └── api/
     ├── metrics.py       # /api/metrics, /api/calls 查询接口
     └── config.py        # /api/config 配置读写接口

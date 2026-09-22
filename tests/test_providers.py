@@ -5,14 +5,14 @@ from typing import cast
 
 import httpx
 import pytest
-from agent_router.config import ProviderConfig
-from agent_router.providers.anthropic_compat import (
+from routelet.config import ProviderConfig
+from routelet.providers.anthropic_compat import (
     FORWARDED_ANTHROPIC_HEADERS_KEY,
     MAX_RETRY_AFTER_SECONDS,
     AnthropicCompatProvider,
     parse_retry_after,
 )
-from agent_router.providers.base import RetryableError
+from routelet.providers.base import RetryableError
 
 
 @pytest.fixture

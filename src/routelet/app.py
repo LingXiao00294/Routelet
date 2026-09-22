@@ -22,26 +22,26 @@ from structlog.contextvars import (
     unbind_contextvars,
 )
 
-from agent_router.api.config import RuntimeReloadError, create_config_router
-from agent_router.api.metrics import create_metrics_router
-from agent_router.config import AppConfig
-from agent_router.db import CallStore
-from agent_router.monitoring import reconfigure_logging
-from agent_router.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
-from agent_router.providers.base import (
+from routelet.api.config import RuntimeReloadError, create_config_router
+from routelet.api.metrics import create_metrics_router
+from routelet.config import AppConfig
+from routelet.db import CallStore
+from routelet.monitoring import reconfigure_logging
+from routelet.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
+from routelet.providers.base import (
     NonRetryableError,
     UpstreamHTTPError,
     UpstreamSSEError,
 )
-from agent_router.recording import CallRecorder
-from agent_router.responses import ManagedStreamingResponse
-from agent_router.routing import (
+from routelet.recording import CallRecorder
+from routelet.responses import ManagedStreamingResponse
+from routelet.routing import (
     AllProvidersFailedError,
     NoProviderAvailableError,
     Router,
     UnknownModelError,
 )
-from agent_router.sse import SSEDecoder, SSEEvent
+from routelet.sse import SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
 
@@ -168,7 +168,7 @@ def create_app(
             logger.info("server.shutdown")
 
     app = FastAPI(
-        title="Agent Router",
+        title="Routelet",
         description="本地 LLM API 路由代理",
         version="0.1.0",
         lifespan=lifespan,

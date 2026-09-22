@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 import structlog
 
-from agent_router.config import ProviderConfig, VirtualModelConfig
+from routelet.config import ProviderConfig, VirtualModelConfig
 
 logger = structlog.get_logger(__name__)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_router.config import (
+from routelet.config import (
     AppConfig,
     ProviderConfig,
     RouterConfig,

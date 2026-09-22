@@ -1,15 +1,15 @@
-# Agent-Router 设计文档
+# Routelet 设计文档
 
 ## 概述
 
-本地 LLM API 路由代理。Claude Code 的 `ANTHROPIC_BASE_URL` 指向本地 router，虚拟模型名映射到多个真实 provider，按优先级路由，故障时自动转移到下一优先级。
+本地 LLM API 路由代理。客户端的 API 基础地址指向 Routelet，虚拟模型名映射到多个真实 provider，按优先级路由，故障时自动转移到下一优先级。
 
-> 当前实现状态：仅支持 Anthropic Messages API 兼容 Provider。本文中的 OpenAI 协议转换属于后续路线图，当前配置会在加载阶段拒绝 `type = "openai"`。
+> 当前实现状态：仅支持 Messages API 兼容 Provider。本文中的 Chat Completions 协议转换属于后续路线图，未实现的协议类型会在配置加载阶段被拒绝。
 
 ``` text
-Claude Code → router (本地 FastAPI) → Anthropic API   (优先级 1)
-                                    → 智谱 API       (优先级 2, 故障转移)
-                                    → OpenAI API      (规划中，当前不可配置)
+Agent → Routelet (本地 FastAPI) → Provider A   (优先级 1)
+                               → Provider B   (优先级 2, 故障转移)
+                               → Provider C   (优先级 3, 故障转移)
 ```
 
 ---
@@ -17,12 +17,12 @@ Claude Code → router (本地 FastAPI) → Anthropic API   (优先级 1)
 ## 项目结构
 
 ``` text
-agent-router/
+routelet/
 ├── pyproject.toml                  # 项目元数据 + 依赖
 ├── config.toml                     # 路由配置 (用户编辑)
 ├── docs/
 │   └── design.md                   # 本文档
-├── src/agent_router/
+├── src/routelet/
 │   ├── __init__.py
 │   ├── main.py                     # 入口: argparse + uvicorn
 │   ├── app.py                      # FastAPI 应用 + 路由处理器
@@ -30,11 +30,7 @@ agent-router/
 │   ├── routing.py                  # 核心: 优先级链 + 故障转移 + 熔断
 │   ├── circuit_breaker.py          # Per-provider 熔断器 (CLOSED/OPEN/HALF_OPEN)
 │   ├── recording.py                # 有界队列 + 后台调用记录 writer
-│   ├── providers/
-│   │   ├── __init__.py
-│   │   ├── base.py                 # 抽象 Provider 接口
-│   │   ├── anthropic_compat.py     # Anthropic 兼容直通
-│   │   └── openai_compat.py        # 规划：Anthropic ↔ OpenAI 协议转换
+│   ├── providers/                 # 抽象接口与 Messages API 兼容直通适配器
 │   ├── db.py                        # SQLite 调用记录持久化
 │   ├── api/
 │   │   ├── __init__.py
@@ -79,50 +75,50 @@ TOML 解析使用 Python 3.11+ 标准库 `tomllib`，无需额外依赖。
 
 ## 配置格式 (config.toml)
 
+以下是连接与模型配置片段；完整可加载配置见 [`config.toml.example`](../config.toml.example)，合并时需保留其中各 Provider 的 `type` 协议字段。Provider 名称、模型、地址和价格均为示例，使用前请替换为实际值。
+
 ```toml
 [server]
 host = "127.0.0.1"
-port = 8080
+port = 9456
 
 # ==========================================
 # Provider 连接设置与实际模型目录
 # ==========================================
-[providers.anthropic]
-type = "anthropic"
-api_key = "${ANTHROPIC_API_KEY}"
-base_url = "https://api.anthropic.com"
+[providers.provider-a]
+api_key = "${PROVIDER_A_API_KEY}"
+base_url = "https://api.provider-a.example"
 
-[providers.anthropic.models."claude-haiku-4-5-20251001"]
+[providers.provider-a.models."model-a-fast"]
 input_price_per_million = 1.0             # 可选，USD / 1M Token
 output_price_per_million = 4.0
 cache_read_price_per_million = 0.1
 cache_write_price_per_million = 1.25
 
-[providers.anthropic.models."claude-sonnet-4-5-20250929"]
+[providers.provider-a.models."model-a-pro"]
 
-[providers.zhipu]
-type = "anthropic"
-api_key = "${ZHIPU_API_KEY}"
-base_url = "https://api.z.ai/api/anthropic"
+[providers.provider-b]
+api_key = "${PROVIDER_B_API_KEY}"
+base_url = "https://api.provider-b.example"
 
-[providers.zhipu.models."glm-5.1"]
+[providers.provider-b.models."model-b-pro"]
 
 # ==========================================
 # 虚拟模型 — 只保存有序引用与结构化 pin
 # ==========================================
 
-[models.haiku-router]
-pinned_model = { provider = "anthropic", model = "claude-haiku-4-5-20251001" }
+[models.fast-route]
+pinned_model = { provider = "provider-a", model = "model-a-fast" }
 models = [
-  { provider = "anthropic", model = "claude-haiku-4-5-20251001" },
-  { provider = "zhipu", model = "glm-5.1" },
+  { provider = "provider-a", model = "model-a-fast" },
+  { provider = "provider-b", model = "model-b-pro" },
 ]
 
-[models.sonnet-router]
-pinned_model = { provider = "anthropic", model = "claude-sonnet-4-5-20250929" }
+[models.coding-route]
+pinned_model = { provider = "provider-a", model = "model-a-pro" }
 models = [
-  { provider = "anthropic", model = "claude-sonnet-4-5-20250929" },
-  { provider = "zhipu", model = "glm-5.1" },
+  { provider = "provider-a", model = "model-a-pro" },
+  { provider = "provider-b", model = "model-b-pro" },
 ]
 ```
 
@@ -156,7 +152,7 @@ class ActualModelDef(BaseModel):
     cache_write_price_per_million: float | None = None
 
 class ProviderDef(BaseModel):
-    type: Literal["anthropic"]
+    # type 字段仅接受已实现的协议标识，具体值见完整配置示例
     api_key: str
     base_url: str
     timeout_seconds: float = 120.0
@@ -179,7 +175,7 @@ class ProviderConfig(BaseModel):
 
 class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
-    port: int = 8080
+    port: int = 9456
 
 class AppConfig(BaseModel):
     server: ServerConfig
@@ -203,7 +199,7 @@ class AppConfig(BaseModel):
 
 **职责：**
 
-- 接收虚拟模型名 + Anthropic 请求体
+- 接收虚拟模型名 + Messages API 请求体
 - 按 priority 顺序遍历 provider 链
 - 每次尝试：调用 provider → 成功则返回 → 失败则判断是否重试
 - 全部失败返回 502 + 聚合错误
@@ -277,7 +273,7 @@ class BaseProvider(ABC):
         """流式请求，yield SSE 原始字节"""
 ```
 
-#### anthropic_compat.py — 直通适配器
+#### Messages API 直通适配器
 
 最简单的适配器：
 
@@ -286,17 +282,17 @@ class BaseProvider(ABC):
 - **非流式**: `POST {base_url}/v1/messages` → 返回 JSON
 - **流式**: `POST {base_url}/v1/messages` (stream=true) → 直接 yield SSE bytes
 
-适用场景：Anthropic 官方 API、智谱 Anthropic 兼容 API、及其他 Anthropic 格式兼容的 provider。
+适用场景：提供 Messages API 兼容接口的 Provider。
 
-#### 规划：openai_compat.py — 协议转换
+#### 规划：Chat Completions 协议转换
 
-Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
+Messages API 和 Chat Completions API 双向转换。
 
-**请求转换 (Anthropic → OpenAI)：**
+**请求转换 (Messages API → Chat Completions)：**
 
-| Anthropic 字段 | OpenAI 字段 | 转换逻辑 |
+| Messages API 字段 | Chat Completions 字段 | 转换逻辑 |
 | --- | --- | --- |
-| `model` | `model` | 替换为真实 OpenAI 模型名 |
+| `model` | `model` | 替换为真实 Chat Completions 模型名 |
 | `system` (string/array) | `messages[0]` | 插入 `{"role": "system", "content": ...}` |
 | `messages[].role` | `messages[].role` | 直接映射 (user/assistant) |
 | `messages[].content` (array) | `messages[].content` (array) | text 块直接映射；image 块转 `image_url` data URL；tool_use 转 `tool_calls`；tool_result 转 `{"role": "tool"}` |
@@ -306,9 +302,9 @@ Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 | `temperature` | `temperature` | 直接映射 |
 | `stream` | `stream` | 直接映射 |
 
-**响应转换 (OpenAI → Anthropic)：**
+**响应转换 (Chat Completions → Messages API)：**
 
-| OpenAI 字段 | Anthropic 字段 | 转换逻辑 |
+| Chat Completions 字段 | Messages API 字段 | 转换逻辑 |
 | --- | --- | --- |
 | `choices[0].message.content` | `content[]` | 字符串 → `[{"type":"text","text":"..."}]` |
 | `choices[0].message.tool_calls[]` | `content[]` | 每个 tool_call → `{"type":"tool_use","id":...,"name":...,"input":...}` |
@@ -318,7 +314,7 @@ Anthropic Messages API 和 OpenAI Chat Completions API 双向转换。
 
 **流式 SSE 转换：**
 
-OpenAI 流式格式：
+Chat Completions 流式格式：
 
 ``` text
 data: {"object":"chat.completion.chunk","choices":[{"delta":{"role":"assistant"},"index":0}]}
@@ -327,7 +323,7 @@ data: {"object":"chat.completion.chunk","choices":[{"finish_reason":"stop"},"ind
 data: [DONE]
 ```
 
-Anthropic 流式格式：
+Messages API 流式格式：
 
 ``` text
 event: message_start
@@ -358,14 +354,14 @@ data: {"type":"message_stop"}
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/health` | 健康检查，返回 `{"status":"ok"}` |
-| `GET` | `/v1/models` | 返回虚拟模型列表，Anthropic List Models 格式 |
+| `GET` | `/v1/models` | 返回虚拟模型列表，Messages API 模型列表 格式 |
 | `POST` | `/v1/messages` | 主聊天端点 |
-| `POST` | `/v1/messages?beta=true` | Claude Code 可能带 beta 参数，忽略即可 |
+| `POST` | `/v1/messages?beta=true` | 客户端 可能带 beta 参数，忽略即可 |
 
 **`POST /v1/messages` 处理流程：**
 
 1. Router 以 50 MiB 上限有界读取请求体（包括 chunked 请求），随后解析 JSON，并校验 `model` 为非空字符串、`stream`（若提供）为布尔值
-2. 提取 `model` 字段，并把 `anthropic-version` / `anthropic-beta` 作为仅供 Provider 使用的内部元数据 → 查找虚拟模型对应的 provider 链
+2. 提取 `model` 字段，并把协议版本与 beta 功能请求头作为仅供 Provider 使用的内部元数据 → 查找虚拟模型对应的 provider 链
 3. 未找到 → 返回 400 + 已知模型列表
 4. `stream: true` → 受管 `StreamingResponse(routing.send_stream(...), media_type="text/event-stream")`；完整 SSE 事件逐个校验后才转发，首个有效事件前允许故障转移，初始注释和跨数据块的半个事件不锁定 Provider；无论正常结束、发送失败还是取消都主动关闭内层流
 5. `stream: false` → `JSONResponse(routing.send(...))`
@@ -379,15 +375,15 @@ data: {"type":"message_stop"}
 ```json
 {
   "data": [
-    {"id": "haiku-router", "type": "model", "display_name": "haiku-router", "created_at": "2025-01-01T00:00:00Z"},
-    {"id": "sonnet-router", "type": "model", "display_name": "sonnet-router", "created_at": "2025-01-01T00:00:00Z"}
+    {"id": "fast-route", "type": "model", "display_name": "fast-route", "created_at": "2025-01-01T00:00:00Z"},
+    {"id": "coding-route", "type": "model", "display_name": "coding-route", "created_at": "2025-01-01T00:00:00Z"}
   ]
 }
 ```
 
 ### 6. main.py + cli/ — 单一启动入口
 
-`agent-router`、`python -m agent_router.main` 与 `python -m agent_router.cli` 均调用同一个启动入口；不再注册管理子命令或 `agent-router-dashboard`。`run` 返回整数退出码，进程入口 `main` 抛出 `SystemExit`。
+`routelet`、`python -m routelet.main` 与 `python -m routelet.cli` 均调用同一个启动入口；不再注册管理子命令或独立的 Dashboard 命令。`run` 返回整数退出码，进程入口 `main` 抛出 `SystemExit`。
 
 - `cli/app.py` 使用标准库 argparse 解析配置、数据库、监听地址、静态文件和浏览器选项。
 - `cli/config_io.py` 在首次运行时以排他写入方式创建空配置，不覆盖已有文件；加载 `.env`，校验配置，允许尚未解析的 Provider 密钥。
@@ -414,10 +410,10 @@ data: {"type":"message_stop"}
 CREATE TABLE IF NOT EXISTS calls (
     id              TEXT PRIMARY KEY,        -- UUID, 请求唯一标识
     timestamp       TEXT NOT NULL,           -- ISO 8601 时间戳
-    virtual_model   TEXT NOT NULL,           -- 虚拟模型名 (如 "haiku-router")
-    provider_name   TEXT,                    -- Provider 配置名 (如 "anthropic")
-    provider_type   TEXT,                    -- 最终成功的 provider 类型 (anthropic/openai)
-    provider_model  TEXT,                    -- 真实模型名 (如 "claude-haiku-4-5")
+    virtual_model   TEXT NOT NULL,           -- 虚拟模型名 (如 "fast-route")
+    provider_name   TEXT,                    -- Provider 配置名 (如 "provider-a")
+    provider_type   TEXT,                    -- 最终成功的 Provider 协议类型
+    provider_model  TEXT,                    -- 真实模型名 (如 "model-a-fast")
     provider_url    TEXT,                    -- 实际调用的 API 端点
     attempt         INTEGER DEFAULT 1,       -- 第几次尝试成功
     latency_ms      INTEGER,                 -- 总耗时 (毫秒)
@@ -435,8 +431,8 @@ CREATE TABLE IF NOT EXISTS calls (
     -- Token 用量 (从响应中提取)
     input_tokens    INTEGER,
     output_tokens   INTEGER,
-    cache_read_tokens   INTEGER,            -- Anthropic cache 读取
-    cache_write_tokens  INTEGER,            -- Anthropic cache 写入
+    cache_read_tokens   INTEGER,            -- Messages API cache 读取
+    cache_write_tokens  INTEGER,            -- Messages API cache 写入
 
     -- 最终成功模型的价格快照 (USD / 1M Token；未配置为 NULL)
     input_price_per_million        REAL,
@@ -485,24 +481,24 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 
 ``` text
 # 请求级别
-{"event": "request.start", "request_id": "abc123", "model": "haiku-router", "stream": true, "timestamp": "..."}
+{"event": "request.start", "request_id": "abc123", "model": "fast-route", "stream": true, "timestamp": "..."}
 {"event": "request.end", "request_id": "abc123", "status": "success", "latency_ms": 1234, "attempt": 1}
 
 # Provider 级别
-{"event": "provider.try", "request_id": "abc123", "provider": "anthropic", "model": "claude-haiku-4-5", "priority": 1}
-{"event": "provider.fail", "request_id": "abc123", "provider": "anthropic", "error": "HTTP 429", "retry": true, "latency_ms": 50}
-{"event": "provider.try", "request_id": "abc123", "provider": "anthropic", "model": "glm-5.1", "priority": 2}
-{"event": "provider.success", "request_id": "abc123", "provider": "anthropic", "status_code": 200, "latency_ms": 1200}
+{"event": "provider.try", "request_id": "abc123", "provider": "provider-a", "model": "model-a-fast", "priority": 1}
+{"event": "provider.fail", "request_id": "abc123", "provider": "provider-a", "error": "HTTP 429", "retry": true, "latency_ms": 50}
+{"event": "provider.try", "request_id": "abc123", "provider": "provider-b", "model": "model-b-pro", "priority": 2}
+{"event": "provider.success", "request_id": "abc123", "provider": "provider-b", "status_code": 200, "latency_ms": 1200}
 
 # Token 用量
 {"event": "token.usage", "request_id": "abc123", "input": 1500, "output": 300, "cache_read": 0, "cache_write": 0, "cost_usd": 0.015}
 
 # 故障转移
-{"event": "failover", "request_id": "abc123", "from": "anthropic:claude-haiku-4-5", "to": "anthropic:glm-5.1", "reason": "rate_limit"}
+{"event": "failover", "request_id": "abc123", "from": "provider-a:model-a-fast", "to": "provider-b:model-b-pro", "reason": "rate_limit"}
 {"event": "failover.exhausted", "request_id": "abc123", "attempts": 3, "errors": [...]}
 
 # 系统级别
-{"event": "server.start", "host": "127.0.0.1", "port": 8080}
+{"event": "server.start", "host": "127.0.0.1", "port": 9456}
 {"event": "server.shutdown", "reason": "SIGTERM", "pending_requests": 0}
 ```
 
@@ -527,7 +523,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 监控批次以 `Promise.allSettled` 分别结算端点，成功项独立更新、失败项保留旧值并列出原因；只有 `/health` 决定服务连接状态。
 
-请求实验室仅使用已发布配置，发送按钮直接调用同源 Anthropic Messages API。它支持流式 UTF-8 解码、跨网络块 SSE、原始事件查看、中止和完整结束事件检查；异常流会显示失败而非误报完成。不执行自动 Provider 探测或示例请求。
+请求实验室仅使用已发布配置，发送按钮直接调用同源 Messages API。它支持流式 UTF-8 解码、跨网络块 SSE、原始事件查看、中止和完整结束事件检查；异常流会显示失败而非误报完成。不执行自动 Provider 探测或示例请求。
 
 弹窗使用原生 showModal 实现焦点约束，支持 Esc、遮罩关闭、编辑放弃确认、滚动锁定与焦点恢复。页面支持快捷搜索、键盘调整 Router 候选顺序、明暗主题和移动端导航。
 
@@ -535,23 +531,11 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 ---
 
-## Claude Code 配置方式
+## 客户端配置方式
 
-修改 `.claude/settings.json`：
+在支持 Messages API 的客户端中，将 API 基础地址指向 `http://127.0.0.1:9456`，模型设置为 Routelet 中已配置的虚拟模型，例如 `fast-route` 或 `coding-route`。具体设置项和环境变量名由客户端决定。
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8080",
-    "ANTHROPIC_AUTH_TOKEN": "dummy",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-router",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-router",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-router"
-  }
-}
-```
-
-`ANTHROPIC_AUTH_TOKEN` 填任意值即可（router 不校验，真实 API key 在 config.toml 中配置）。`ANTHROPIC_BASE_URL` 指向本地 router。
+客户端认证 token 可填写任意非空值，例如 `dummy`；Routelet 不校验该值。实际 Provider API key 在 `config.toml` 中配置，客户端无需持有。
 
 ---
 
@@ -561,11 +545,11 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | --- | --- | --- |
 | 配置格式 | TOML | Python 标准库支持，项目统一 (pyproject.toml)，可读性好 |
 | 路由状态 | 有状态 (熔断器) | 每请求独立遍历 provider 链，但通过熔断器跳过持续故障的 provider |
-| 流式故障转移 | 无缓冲直传 | SSE 字节边收边发，优先保证延迟；流中断由 Claude Code 自动重试触发下一 provider |
+| 流式故障转移 | 无缓冲直传 | SSE 字节边收边发，优先保证延迟；流中断后的重试由客户端决定 |
 | HTTP 客户端 | 单实例复用 | 进程级 httpx.AsyncClient，按 base_url 自动连接池隔离 |
 | 调用记录 | 有界内存队列 + 单后台 writer | 观测存储故障不改变模型响应；队列满或 SQLite 故障时允许丢失记录 |
 | 配置热更新 | 原子写盘 + 运行时回滚 | 候选配置先完整验证；文件、Router、日志任一步失败都恢复旧状态 |
-| Provider 接口 | 统一 Anthropic 格式 | routing.py 不感知后端协议，OpenAI 适配器内部转换 |
+| Provider 接口 | 统一 Messages API 格式 | routing.py 不感知后端协议，规划中的 Chat Completions 适配器负责内部转换 |
 | 熔断策略 | Per-provider 三态 | 401/403 立即熔断；5xx/瞬态传输错误连续失败后熔断；429/529 仅短冷却；600s 后单探测半开 |
 
 ---
@@ -581,7 +565,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | provider 返回 429/529 | 故障转移 + 按 `Retry-After` 或默认值进入短冷却，不累计熔断 |
 | provider 连续返回 5xx 或发生瞬态传输错误 | 故障转移 + 达阈值后熔断 |
 | 熔断 provider 恢复 | 600s 后半开探测，成功则关闭熔断器 |
-| 环境变量未设置 | `agent-router` 可启动；路由时跳过对应 provider；严格配置解析仍失败 |
+| 环境变量未设置 | `routelet` 可启动；路由时跳过对应 provider；严格配置解析仍失败 |
 | provider 返回非 JSON | 不可重试，立即返回 502 |
 | 流传输中断 | 关闭客户端连接，日志记录 |
 | 客户端断开 | 取消 Provider 请求 (asyncio.CancelledError) |
@@ -596,15 +580,15 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | --- | --- | --- |
 | 1 | pyproject.toml 依赖 + 目录结构 | - |
 | 2 | config.py (TOML 加载 + Pydantic 校验) | 合法/非法配置、环境变量插值、缺失变量报错 |
-| 3 | providers/base.py + providers/anthropic_compat.py | mock Provider，验证直通和 header 替换 |
+| 3 | providers/ 抽象接口与 Messages API 适配器 | mock Provider，验证直通和 header 替换 |
 | 4 | routing.py (优先级链 + 故障转移) | 成功/429/5xx/超时/全部失败 各场景 |
 | 5 | app.py + main.py (FastAPI + 入口) | /health /v1/models /v1/messages |
 | 6 | monitoring.py (结构化日志) | 日志级别、request_id 串联 |
 | 7 | db.py (SQLite 调用记录) + api/metrics.py | 写入/查询调用记录 |
 | 8 | config.toml (示例配置) | - |
-| 9（规划） | providers/openai_compat.py (协议转换，先非流式) | 请求/响应转换正确性 |
+| 9（规划） | Chat Completions 协议转换，先非流式 | 请求/响应转换正确性 |
 | 10 | dashboard/ (Vue 骨架) | 页面渲染、API 数据加载 |
-| 11 | 集成测试 + 端到端验证 | 启动 router → curl 测试 → Claude Code 配置测试 |
+| 11 | 集成测试 + 端到端验证 | 启动 Routelet → curl 测试 → 客户端配置测试 |
 
 ---
 
@@ -612,23 +596,23 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 ```bash
 # 1. 启动
-uv run agent-router --config config.toml
+uv run routelet --config config.toml
 
 # 2. 健康检查
-curl http://127.0.0.1:8080/health
+curl http://127.0.0.1:9456/health
 
 # 3. 模型列表
-curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:9456/v1/models
 
 # 4. 非流式请求
-curl -s -X POST http://127.0.0.1:8080/v1/messages \
+curl -s -X POST http://127.0.0.1:9456/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"haiku-router","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"fast-route","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'
 
 # 5. 流式请求
-curl -s -X POST http://127.0.0.1:8080/v1/messages \
+curl -s -X POST http://127.0.0.1:9456/v1/messages \
   -H "Content-Type: application/json" \
-  -d '{"model":"haiku-router","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"你好"}]}'
+  -d '{"model":"fast-route","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"你好"}]}'
 
 # 6. 故障转移测试 (故意配错第一个 provider 的 base_url)
 ```

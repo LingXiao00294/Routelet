@@ -5,7 +5,7 @@ import sqlite3
 
 import pytest
 
-from agent_router.db import (
+from routelet.db import (
     CALL_SCHEMA_COLUMNS,
     CALL_SUMMARY_COLUMNS,
     MAX_PERSISTED_BODY_BYTES,

@@ -1,4 +1,4 @@
-from agent_router.cli import main
+from routelet.cli import main
 
 
 if __name__ == "__main__":

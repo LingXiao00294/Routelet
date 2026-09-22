@@ -8,10 +8,10 @@ from ipaddress import ip_address
 
 import uvicorn
 
-from agent_router.cli.config_io import load_startup_config, unresolved_runtime_providers
-from agent_router.dashboard import find_dashboard_dist, mount_dashboard
-from agent_router.db import CallStore
-from agent_router.monitoring import setup_logging
+from routelet.cli.config_io import load_startup_config, unresolved_runtime_providers
+from routelet.dashboard import find_dashboard_dist, mount_dashboard
+from routelet.db import CallStore
+from routelet.monitoring import setup_logging
 
 
 class BrowserServer(uvicorn.Server):
@@ -89,12 +89,12 @@ def command_start(
         log_max_bytes=config.server.log_max_bytes,
         log_backup_count=config.server.log_backup_count,
     )
-    from agent_router.app import create_app
+    from routelet.app import create_app
 
     app = create_app(config, CallStore(db), config_path=config_path)
     mount_dashboard(app, dist)
     url = _browser_url(config.server.host, config.server.port)
-    print(f"Agent Router API / Dashboard: {url}")
+    print(f"Routelet API / Dashboard: {url}")
     print(f"配置文件: {config_path}")
     print(f"数据库: {db}")
     server = BrowserServer(

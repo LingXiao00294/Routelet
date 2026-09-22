@@ -9,7 +9,7 @@ from typing import Final
 import httpx
 from structlog import get_logger
 
-from agent_router.providers.base import (
+from routelet.providers.base import (
     BaseProvider,
     NonRetryableError,
     RetryableError,
@@ -26,7 +26,7 @@ RETRYABLE_EXCEPTIONS = (
     httpx.RemoteProtocolError,
 )
 MAX_RETRY_AFTER_SECONDS = 86_400.0
-FORWARDED_ANTHROPIC_HEADERS_KEY: Final = "_agent_router_anthropic_headers"
+FORWARDED_ANTHROPIC_HEADERS_KEY: Final = "_routelet_anthropic_headers"
 DEFAULT_ANTHROPIC_VERSION: Final = "2023-06-01"
 
 

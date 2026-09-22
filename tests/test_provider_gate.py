@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from agent_router.config import ProviderConfig
-from agent_router.provider_gate import (
+from routelet.config import ProviderConfig
+from routelet.provider_gate import (
     ProviderCapacityError,
     ProviderCooldownError,
     ProviderGate,

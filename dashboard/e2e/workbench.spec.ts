@@ -15,7 +15,7 @@ test("overview, time scope, command palette and theme", async ({ page }) => {
   const usage = page.getByRole("dialog");
   await expect(usage.locator("tbody tr")).toHaveCount(3);
   await usage.getByRole("button", { name: "实际模型", exact: true }).click();
-  await usage.getByLabel("筛选用量模型").fill("claude");
+  await usage.getByLabel("筛选用量模型").fill("model-a");
   await expect(usage.locator("tbody tr")).toHaveCount(1);
   await page.keyboard.press("Escape");
   await page.screenshot({
@@ -62,12 +62,12 @@ test("call pagination, structured filtering, inspector and CSV download", async 
   await expect(dialog).toContainText("这是用于验证界面的模拟请求");
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await page.getByLabel("Provider", { exact: true }).selectOption("DeepSeek");
+  await page.getByLabel("Provider", { exact: true }).selectOption("ProviderB");
   await page
     .getByLabel("实际模型", { exact: true })
-    .selectOption("deepseek-v4-pro");
-  await expect(page).toHaveURL(/provider=DeepSeek/);
-  await expect(page).toHaveURL(/provider_model=deepseek-v4-pro/);
+    .selectOption("model-b-pro");
+  await expect(page).toHaveURL(/provider=ProviderB/);
+  await expect(page).toHaveURL(/provider_model=model-b-pro/);
   await page
     .getByRole("button", { name: /清除筛选/ })
     .first()
@@ -76,7 +76,7 @@ test("call pagination, structured filtering, inspector and CSV download", async 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出当前页" }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("agent-router-calls-page-1.csv");
+  expect(download.suggestedFilename()).toBe("routelet-calls-page-1.csv");
 });
 
 test("empty workspace onboarding through provider, catalog, route and publish", async ({
@@ -173,10 +173,10 @@ test("route reorder and pin survive publication", async ({ page }) => {
     .click();
   const dialog = page.getByRole("dialog");
   await dialog
-    .getByRole("button", { name: "下移 claude-sonnet-4-6", exact: true })
+    .getByRole("button", { name: "下移 model-a-pro", exact: true })
     .click();
   await dialog
-    .getByRole("button", { name: "固定 DeepSeek/deepseek-v4-pro", exact: true })
+    .getByRole("button", { name: "固定 ProviderB/model-b-pro", exact: true })
     .click();
   await dialog.getByRole("button", { name: "应用到草稿" }).click();
   await page.getByRole("button", { name: "检查并发布" }).click();
@@ -184,11 +184,11 @@ test("route reorder and pin survive publication", async ({ page }) => {
   await expect(page.locator(".draft-bar")).toHaveCount(0);
   expect(state.writes[0].router.mode).toBe("sticky");
   expect(state.writes[0].models["coding-assistant"].models[0].provider).toBe(
-    "DeepSeek",
+    "ProviderB",
   );
   expect(
     state.writes[0].models["coding-assistant"].pinned_model?.provider,
-  ).toBe("DeepSeek");
+  ).toBe("ProviderB");
 });
 
 test("route dragging previews the destination, animates and persists the order", async ({
@@ -322,20 +322,20 @@ test("cascade deletion gives impact preview and remains a draft", async ({
   const state = await installApi(page);
   await page.goto("/providers");
   await page
-    .getByRole("button", { name: "删除 Provider Anthropic", exact: true })
+    .getByRole("button", { name: "删除 Provider ProviderA", exact: true })
     .click();
   await expect(page.getByRole("dialog")).toContainText("2 个 Router");
   await page.getByRole("button", { name: "从草稿中删除" }).click();
   expect(state.writes).toHaveLength(0);
   await page.getByRole("link", { name: /^Routers/ }).click();
   await expect(
-    page.locator(".chain-node").filter({ hasText: "Anthropic" }),
+    page.locator(".chain-node").filter({ hasText: "ProviderA" }),
   ).toHaveCount(0);
   await page.getByRole("button", { name: "放弃草稿", exact: true }).click();
   await page.getByRole("button", { name: "放弃并重新读取" }).click();
   await expect(page.locator(".draft-bar")).toHaveCount(0);
   await expect(
-    page.locator(".chain-node").filter({ hasText: "Anthropic" }),
+    page.locator(".chain-node").filter({ hasText: "ProviderA" }),
   ).toHaveCount(2);
 });
 
@@ -373,7 +373,7 @@ test("playground select chevron stays inset and centered in both themes and view
   await installApi(page);
   for (const theme of ["light", "dark"]) {
     await page.addInitScript(
-      (value) => localStorage.setItem("ar-theme", value),
+      (value) => localStorage.setItem("routelet-theme", value),
       theme,
     );
     for (const width of [1440, 390]) {
@@ -422,7 +422,7 @@ test("playground handles both streamed and JSON responses", async ({
   await page.getByLabel(/流式输出/).uncheck();
   await page.getByRole("button", { name: "发送请求", exact: true }).click();
   await expect(page.locator(".response-text")).toContainText(
-    "通过 Agent Router 连接",
+    "通过 Routelet 连接",
   );
 });
 
@@ -530,7 +530,7 @@ test("cyberpunk palettes share typography and fit desktop and mobile pages", asy
   page.on("pageerror", (error) => errors.push(error.message));
   for (const theme of ["light", "dark"]) {
     await page.addInitScript(
-      (value) => localStorage.setItem("ar-theme", value),
+      (value) => localStorage.setItem("routelet-theme", value),
       theme,
     );
     for (const mobile of [false, true]) {
@@ -674,7 +674,7 @@ test("configuration validation and masked credentials survive provider editing",
   const state = await installApi(page);
   await page.goto("/providers");
   await page
-    .getByRole("button", { name: "编辑 Provider Anthropic", exact: true })
+    .getByRole("button", { name: "编辑 Provider ProviderA", exact: true })
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel(/API Key/)).toHaveValue("");
@@ -688,7 +688,7 @@ test("configuration validation and masked credentials survive provider editing",
   await page.getByRole("button", { name: "检查并发布" }).click();
   await page.getByRole("button", { name: "确认发布" }).click();
   await expect(page.locator(".draft-bar")).toHaveCount(0);
-  expect(state.writes[0].providers.Anthropic.api_key).toBe("sk-a********test");
+  expect(state.writes[0].providers.ProviderA.api_key).toBe("sk-a********test");
   await page.getByRole("link", { name: "系统设置", exact: true }).click();
   await page.getByLabel("端口", { exact: true }).fill("99999");
   await page.getByRole("button", { name: "检查并发布" }).click();
@@ -708,7 +708,7 @@ test("circuit reset acts on runtime only after confirmation", async ({
       open = false;
       await route.fulfill({ json: { status: "ok" } });
     } else
-      await route.fulfill({ json: { Anthropic: open ? "open" : "closed" } });
+      await route.fulfill({ json: { ProviderA: open ? "open" : "closed" } });
   });
   await page.goto("/providers");
   await expect(page.locator(".circuit-alert")).toContainText("熔断中");

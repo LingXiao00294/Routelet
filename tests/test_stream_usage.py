@@ -10,10 +10,10 @@ from typing import Any
 import pytest
 from structlog.contextvars import get_contextvars
 
-from agent_router.app import _stream_wrapper
-from agent_router.db import CallStore
-from agent_router.providers.base import RetryableError
-from agent_router.recording import CallRecorder
+from routelet.app import _stream_wrapper
+from routelet.db import CallStore
+from routelet.providers.base import RetryableError
+from routelet.recording import CallRecorder
 
 
 class _Stream:

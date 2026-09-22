@@ -2,9 +2,9 @@
 
 ## 项目结构
 
-Agent Router 是本地 LLM API 路由代理，使用 Python 3.12+、FastAPI 和 SQLite。
+Routelet 是本地 LLM API 路由代理，使用 Python 3.12+、FastAPI 和 SQLite。
 
-- `src/agent_router/`：后端；`routing.py` 负责路由，`providers/` 封装上游协议，`api/` 提供配置与统计接口，`cli/` 提供单一启动入口。
+- `src/routelet/`：后端；`routing.py` 负责路由，`providers/` 封装上游协议，`api/` 提供配置与统计接口，`cli/` 提供单一启动入口。
 - `dashboard/src/`：Vue 3、TypeScript、Pinia 前端；页面、组件、状态和样式分别位于 `views/`、`components/`、`stores/`、`styles/`。
 - `tests/`、`dashboard/tests/`：后端与前端测试；`dashboard/dist/` 是生成的静态资源。
 - `docs/design.md`：架构设计；`config.toml.example`、`.env.example`：配置示例。
@@ -15,7 +15,7 @@ Agent Router 是本地 LLM API 路由代理，使用 Python 3.12+、FastAPI 和 
 
 ```bash
 uv sync --frozen                       # 安装锁定依赖及开发工具
-uv run agent-router                    # API + Dashboard：127.0.0.1:9456；自动打开浏览器
+uv run routelet                        # API + Dashboard：127.0.0.1:9456；自动打开浏览器
 uv run pytest                         # 后端测试
 uv run ruff check src tests            # Python lint
 uv run ruff format --check src tests   # 格式检查
@@ -31,7 +31,7 @@ bun test                              # 前端测试
 bun run build                         # vue-tsc 检查并构建静态资源
 ```
 
-构建后，在根目录运行 `uv run agent-router` 同时启动 API 和面板，首次运行自动创建空配置；运行 `uv build` 打包 Python 分发文件及已构建的面板。
+构建后，在根目录运行 `uv run routelet` 同时启动 API 和面板，首次运行自动创建空配置；运行 `uv build` 打包 Python 分发文件及已构建的面板。
 
 ## 代码风格与命名
 

@@ -14,12 +14,12 @@ from starlette.responses import Response
 from starlette.types import Message, Scope
 from structlog.contextvars import bound_contextvars, get_contextvars
 
-from agent_router import app as app_module
-from agent_router.app import _prefetch_first_chunk, create_app
-from agent_router.config import AppConfig
-from agent_router.db import CallStore
-from agent_router.recording import CallRecorder
-from agent_router.routing import Router
+from routelet import app as app_module
+from routelet.app import _prefetch_first_chunk, create_app
+from routelet.config import AppConfig
+from routelet.db import CallStore
+from routelet.recording import CallRecorder
+from routelet.routing import Router
 
 _START_EVENT = b'event: message_start\ndata: {"type":"message_start"}\n\n'
 

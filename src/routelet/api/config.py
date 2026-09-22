@@ -12,8 +12,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-from agent_router.config import AppConfig, ConfigError, has_unresolved_env_var
-from agent_router.config import parse_config_data
+from routelet.config import AppConfig, ConfigError, has_unresolved_env_var
+from routelet.config import parse_config_data
 
 
 class RuntimeReloadError(RuntimeError):

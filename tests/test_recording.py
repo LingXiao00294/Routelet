@@ -8,8 +8,8 @@ import pytest
 from structlog.contextvars import bind_contextvars, clear_contextvars
 from structlog.testing import capture_logs
 
-from agent_router.db import MAX_PERSISTED_BODY_BYTES, CallStore
-from agent_router.recording import CallRecorder
+from routelet.db import MAX_PERSISTED_BODY_BYTES, CallStore
+from routelet.recording import CallRecorder
 
 
 @pytest.fixture

@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 # 运行日志默认值（ServerConfig 与 monitoring.setup_logging 共用，避免多处字面量漂移）。
-DEFAULT_LOG_FILE = "logs/agent-router.log"
+DEFAULT_LOG_FILE = "logs/routelet.log"
 DEFAULT_LOG_MAX_BYTES = 10_000_000
 DEFAULT_LOG_BACKUP_COUNT = 5
 _UNRESOLVED_ENV_RE = re.compile(r"\$\{[^}]+}")

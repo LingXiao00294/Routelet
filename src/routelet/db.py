@@ -143,7 +143,7 @@ class _MetricsConnection(sqlite3.Connection):
         super().__init__(*args, **kwargs)
         # SQLite accepts any scalar result; the bundled stub only permits int.
         self.create_aggregate(
-            "agent_router_token_sum",
+            "routelet_token_sum",
             1,
             _ExactTokenSum,  # ty: ignore[invalid-argument-type]
         )
@@ -399,7 +399,7 @@ class CallStore:
             for column in _TOKEN_COLUMNS:
                 query = query.replace(
                     f"SUM({column})",
-                    f"agent_router_token_sum(CASE WHEN TYPEOF({column}) = 'integer' "
+                    f"routelet_token_sum(CASE WHEN TYPEOF({column}) = 'integer' "
                     f"THEN {column} ELSE CAST({column} AS REAL) END)",
                 )
             rows = await self.conn.execute_fetchall(query, parameters)

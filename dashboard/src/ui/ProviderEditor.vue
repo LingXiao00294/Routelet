@@ -116,7 +116,7 @@ const limits = [
               v-model="name"
               required
               :disabled="!!props.name"
-              placeholder="例如 anthropic-primary"
+              placeholder="例如 provider-primary"
               autofocus
             /><small>用于标识连接与 Router 引用，创建后保持固定。</small></label
           ><label class="field full"
@@ -125,9 +125,9 @@ const limits = [
               v-model="form.base_url"
               type="url"
               required
-              placeholder="https://api.anthropic.com"
+              placeholder="https://api.provider.example"
             /><small
-              >Anthropic Messages 兼容地址，不包含 /v1/messages。</small
+              >Messages API 兼容地址，不包含 /v1/messages。</small
             ></label
           ><label class="field full"
             ><span>API Key <b v-if="!props.name">*</b></span

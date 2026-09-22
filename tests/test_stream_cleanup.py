@@ -9,8 +9,8 @@ from contextlib import suppress
 import httpx
 import pytest
 
-from agent_router.config import AppConfig
-from agent_router.routing import Router
+from routelet.config import AppConfig
+from routelet.routing import Router
 
 _START_EVENT = b'event: message_start\ndata: {"type":"message_start"}\n\n'
 _ERROR_EVENT = (
