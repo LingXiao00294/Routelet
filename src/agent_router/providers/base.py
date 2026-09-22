@@ -2,10 +2,34 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 
 import httpx
 
 from agent_router.config import ProviderConfig
+
+
+@dataclass(frozen=True)
+class UpstreamResponse:
+    status_code: int
+    body: bytes
+    headers: tuple[tuple[str, str], ...]
+
+
+class UpstreamHTTPError(Exception):
+    """An upstream HTTP failure to return without rewriting its payload."""
+
+    def __init__(self, message: str, response: UpstreamResponse) -> None:
+        super().__init__(message)
+        self.response = response
+
+
+class UpstreamSSEError(Exception):
+    """An upstream SSE error frame already forwarded to the caller."""
+
+    def __init__(self, message: str, frame: bytes) -> None:
+        super().__init__(message)
+        self.frame = frame
 
 
 class NonRetryableError(Exception):
@@ -16,9 +40,17 @@ class NonRetryableError(Exception):
     leave it unset and remain gateway failures.
     """
 
-    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        upstream_response: UpstreamResponse | None = None,
+    ) -> None:
         super().__init__(message)
         self.status_code = status_code
+        self.upstream_response = upstream_response
+        self.upstream_frame: bytes | None = None
 
 
 class RetryableError(Exception):
@@ -31,11 +63,14 @@ class RetryableError(Exception):
         immediate_break: bool = False,
         rate_limited: bool = False,
         retry_after: float | None = None,
+        upstream_response: UpstreamResponse | None = None,
     ) -> None:
         super().__init__(message)
         self.immediate_break = immediate_break
         self.rate_limited = rate_limited
         self.retry_after = retry_after
+        self.upstream_response = upstream_response
+        self.upstream_frame: bytes | None = None
 
 
 class BaseProvider(ABC):

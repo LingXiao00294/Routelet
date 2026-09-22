@@ -19,7 +19,11 @@ from agent_router.routing import (
     AllProvidersFailedError,
     _check_stream_error,
 )
-from agent_router.providers.base import NonRetryableError, RetryableError
+from agent_router.providers.base import (
+    NonRetryableError,
+    RetryableError,
+    UpstreamHTTPError,
+)
 
 
 def _reload_race_config(
@@ -407,9 +411,14 @@ class TestRateLimitRouting:
             assert (await router.circuit_breaker.state("p1")) == CircuitState.CLOSED
             assert router.provider_gate.is_in_cooldown("p1")
 
-    async def test_sticky_does_not_failover(self, http_client):
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("status_code", [500, 401])
+    async def test_sticky_does_not_failover(self, stream, status_code):
+        attempted_hosts: list[str] = []
+
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(500, text="boom")
+            attempted_hosts.append(request.url.host)
+            return httpx.Response(status_code, text="boom")
 
         transport = httpx.MockTransport(handler)
         async with httpx.AsyncClient(transport=transport) as client:
@@ -418,7 +427,7 @@ class TestRateLimitRouting:
                 router=RouterConfig(mode="sticky"),
                 models={
                     "m": VirtualModelConfig(
-                        pinned_model=ModelRef(provider="p1", model="m1"),
+                        pinned_model=ModelRef(provider="p2", model="m2"),
                         providers=[
                             ProviderConfig(
                                 type="anthropic",
@@ -441,16 +450,21 @@ class TestRateLimitRouting:
                 },
             )
             router = Router(config, client)
-            with pytest.raises(AllProvidersFailedError) as exc:
-                await router.route_non_stream(
-                    {"model": "m", "max_tokens": 10, "messages": []}
-                )
-            assert len(exc.value.errors) == 1
-            assert exc.value.errors[0]["provider"] == "p1"
+            outcome: dict = {}
+            body = {"model": "m", "max_tokens": 10, "messages": []}
+            with pytest.raises(UpstreamHTTPError) as exc:
+                if stream:
+                    async for _ in router.route_stream(body, outcome):
+                        pass
+                else:
+                    await router.route_non_stream(body, outcome)
+            assert exc.value.response.status_code == status_code
+            assert exc.value.response.body == b"boom"
+            assert outcome["_failures"][0]["provider"] == "p2"
+            assert attempted_hosts == ["p2.test"]
+            assert outcome["attempt"] == 1
 
-    async def test_sticky_rate_limit_raises_no_provider(self, http_client):
-        from agent_router.routing import NoProviderAvailableError
-
+    async def test_sticky_rate_limit_preserves_response(self, http_client):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(429, text="rl", headers={"Retry-After": "9"})
 
@@ -476,12 +490,15 @@ class TestRateLimitRouting:
                 },
             )
             router = Router(config, client)
-            with pytest.raises(NoProviderAvailableError) as exc:
+            with pytest.raises(UpstreamHTTPError) as exc:
                 await router.route_non_stream(
                     {"model": "m", "max_tokens": 10, "messages": []}
                 )
-            assert exc.value.kind == "rate_limit"
-            assert exc.value.retry_after == pytest.approx(9.0, abs=0.05)
+            assert exc.value.response.status_code == 429
+            assert exc.value.response.body == b"rl"
+            assert router.provider_gate.cooldown_remaining("p1") == pytest.approx(
+                9.0, abs=0.05
+            )
 
     async def test_sticky_missing_pin_raises_clear_error(self, http_client):
         config = AppConfig(

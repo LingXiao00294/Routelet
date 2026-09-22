@@ -11,7 +11,7 @@ log_backup_count = 5
 [router]
 failure_threshold = 5
 recovery_timeout = 600
-mode = "sticky"   # 默认指定模型；改为 "failover" 可开启故障转移
+mode = "sticky"   # 自动路由关闭：仅调用 pinned_model，上游错误状态码/正文原样返回；"failover" 开启故障转移
 
 [providers.zai]
 type = "anthropic"

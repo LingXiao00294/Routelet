@@ -14,7 +14,7 @@ import httpx
 import structlog
 from anyio import CancelScope
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from structlog.contextvars import (
     bind_contextvars,
     bound_contextvars,
@@ -28,7 +28,11 @@ from agent_router.config import AppConfig
 from agent_router.db import CallStore
 from agent_router.monitoring import reconfigure_logging
 from agent_router.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
-from agent_router.providers.base import NonRetryableError
+from agent_router.providers.base import (
+    NonRetryableError,
+    UpstreamHTTPError,
+    UpstreamSSEError,
+)
 from agent_router.recording import CallRecorder
 from agent_router.responses import ManagedStreamingResponse
 from agent_router.routing import (
@@ -282,14 +286,15 @@ def create_app(
         try:
             if is_stream:
                 outcome: dict = {}
-                # 有界预取首个 chunk：快速失败可转 HTTP 429/503/502；
+                # sticky 等待上游响应，保留错误 HTTP 状态；failover 有界预取，
                 # 超时则先返回 SSE 头，继续在响应体中等待首字节。
                 stream_agen: AsyncGenerator[bytes, None] = engine.route_stream(
                     upstream_body, outcome
                 )
                 try:
                     first_chunk, pending_first = await _prefetch_first_chunk(
-                        stream_agen
+                        stream_agen,
+                        wait_for_upstream=engine.config.router.mode == "sticky",
                     )
                 except asyncio.CancelledError:
                     _record_cancelled_stream(
@@ -447,6 +452,19 @@ def create_app(
                 e, recorder, virtual_model, body, start_time, outcome=outcome
             )
 
+        except UpstreamHTTPError as e:
+            recorder.submit(
+                virtual_model=virtual_model,
+                status="error",
+                error_type="upstream_http_error",
+                error_message=str(e),
+                attempt=outcome.get("attempt", 0),
+                latency_ms=int((time.time() - start_time) * 1000),
+                request_body=body,
+                failover_details=outcome.get("_failures"),
+            )
+            return _upstream_error_response(e)
+
         except NonRetryableError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             status_code = e.status_code or 502
@@ -527,7 +545,7 @@ def create_app(
                 status_code=response.status_code,
                 duration_ms=round((time.time() - start) * 1000),
             )
-            response.headers["X-Request-ID"] = request_id
+            response.headers.setdefault("X-Request-ID", request_id)
             return response
         except Exception:
             logger.error(
@@ -647,14 +665,45 @@ def _anthropic_error_response(
     )
 
 
+def _upstream_error_response(error: UpstreamHTTPError) -> Response:
+    """Preserve error payload and metadata, excluding transport-level headers.
+
+    HTTPX has already decoded content encoding; Starlette computes the new
+    content length. Only error-relevant end-to-end headers are forwarded.
+    """
+    response = Response(error.response.body, status_code=error.response.status_code)
+    connection_headers = {
+        token.strip().lower()
+        for name, value in error.response.headers
+        if name.lower() == "connection"
+        for token in value.split(",")
+    }
+    for name, value in error.response.headers:
+        name = name.lower()
+        if name in connection_headers:
+            continue
+        if name in {
+            "content-type",
+            "content-language",
+            "retry-after",
+            "www-authenticate",
+            "request-id",
+            "x-request-id",
+        } or name.startswith(("ratelimit-", "x-ratelimit-", "anthropic-ratelimit-")):
+            response.headers.append(name, value)
+    return response
+
+
 async def _prefetch_first_chunk(
     stream_agen: AsyncGenerator[bytes, None],
     *,
     timeout: float | None = None,
+    wait_for_upstream: bool = False,
 ) -> tuple[bytes | None, asyncio.Task[bytes] | None]:
     """有界预取流式首 chunk，超时不取消上游任务.
 
     ``timeout`` 默认读取模块常量（调用时求值，便于测试 monkeypatch）。
+    ``wait_for_upstream`` 禁止提前发送 SSE 响应头，仍受 Provider 超时约束。
     返回前调用方若取消或发生异常，负责取消并等待预取任务，然后关闭源流。
 
     Returns:
@@ -664,6 +713,8 @@ async def _prefetch_first_chunk(
         - 业务异常（限流/全失败等）：直接向上抛出
     """
     wait_for = _STREAM_FIRST_BYTE_PREFETCH_TIMEOUT if timeout is None else timeout
+    if wait_for_upstream:
+        wait_for = None
     task: asyncio.Task[bytes] = asyncio.create_task(anext(stream_agen))
     try:
         done, _pending = await asyncio.wait({task}, timeout=wait_for)
@@ -960,6 +1011,9 @@ async def _stream_wrapper(
             failover_details=failover,
         )
         recorded = True
+        if isinstance(e, UpstreamSSEError):
+            # Routing already yielded the original error frame; do not duplicate it.
+            return
         err_type = _stream_error_type(e)
         error_body = json.dumps(
             {

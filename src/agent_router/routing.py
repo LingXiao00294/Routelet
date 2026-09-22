@@ -23,7 +23,13 @@ from agent_router.provider_gate import (
     ProviderGate,
 )
 from agent_router.providers.anthropic_compat import AnthropicCompatProvider
-from agent_router.providers.base import BaseProvider, NonRetryableError, RetryableError
+from agent_router.providers.base import (
+    BaseProvider,
+    NonRetryableError,
+    RetryableError,
+    UpstreamHTTPError,
+    UpstreamSSEError,
+)
 from agent_router.sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
@@ -196,11 +202,12 @@ class Router:
         *,
         permit: CircuitPermit | None,
         allow_failover: bool,
+        passthrough_errors: bool = False,
     ) -> None:
         """Shared error handling for both route methods.
 
         For NonRetryableError, re-raises after logging.
-        For sticky mode (allow_failover=False), re-raises retryable errors too.
+        Sticky mode preserves available upstream HTTP responses and SSE frames.
         """
         p_latency = (time.time() - p_start) * 1000
         is_retryable = isinstance(e, RetryableError)
@@ -256,6 +263,12 @@ class Router:
             rate_limited=rate_limited,
             provider_latency_ms=round(p_latency),
         )
+
+        if passthrough_errors:
+            if e.upstream_response is not None:
+                raise UpstreamHTTPError(str(e), e.upstream_response) from e
+            if e.upstream_frame is not None:
+                raise UpstreamSSEError(str(e), e.upstream_frame) from e
 
         if not is_retryable:
             raise e
@@ -566,6 +579,7 @@ class Router:
                         i,
                         permit=permit,
                         allow_failover=allow_failover,
+                        passthrough_errors=not allow_failover,
                     )
                 except StickyRateLimited as srl:
                     raise NoProviderAvailableError(
@@ -701,6 +715,7 @@ class Router:
                             "cache_write": provider_cfg.cache_write_price_per_million,
                         }
                     error_decoder = SSEDecoder()
+                    data_event_seen = False
                     async with aclosing(provider.send_stream(request_body)) as upstream:
                         async for chunk in upstream:
                             try:
@@ -711,8 +726,13 @@ class Router:
                                 ) from exc
                             for frame in frames:
                                 if frame.event is not None:
-                                    _raise_for_stream_error(frame.event)
-                                elif not client_started:
+                                    try:
+                                        _raise_for_stream_error(frame.event)
+                                    except (RetryableError, NonRetryableError) as e:
+                                        e.upstream_frame = frame.raw
+                                        raise
+                                    data_event_seen = True
+                                elif not client_started and allow_failover:
                                     # 初始 keepalive 不能决定使用哪个 Provider。
                                     continue
                                 client_started = True
@@ -721,7 +741,7 @@ class Router:
                         error_decoder.finish()
                     except SSEDecodeError as exc:
                         raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
-                    if not client_started:
+                    if not data_event_seen:
                         raise NonRetryableError(
                             "Upstream stream ended without an SSE data event"
                         )
@@ -776,7 +796,11 @@ class Router:
                         i,
                         permit=permit,
                         allow_failover=can_failover,
+                        passthrough_errors=not allow_failover,
                     )
+                except UpstreamSSEError as upstream_error:
+                    yield upstream_error.frame
+                    raise
                 except StickyRateLimited as srl:
                     raise NoProviderAvailableError(
                         virtual_model,

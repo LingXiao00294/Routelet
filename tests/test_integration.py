@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 from types import SimpleNamespace
 from typing import cast
@@ -31,6 +32,218 @@ from agent_router.db import CALL_SUMMARY_COLUMNS, CallStore
 from agent_router.recording import CallRecorder
 from agent_router.responses import ManagedStreamingResponse
 from agent_router.routing import NoProviderAvailableError, Router
+
+
+def _passthrough_config() -> AppConfig:
+    return AppConfig(
+        router=RouterConfig(mode="sticky"),
+        models={
+            "m": VirtualModelConfig(
+                pinned_model=ModelRef(provider="primary", model="real-model"),
+                providers=[
+                    ProviderConfig(
+                        type="anthropic",
+                        name=name,
+                        model="real-model",
+                        api_key="test-key",
+                        base_url=f"https://{name}.test",
+                        priority=index,
+                    )
+                    for index, name in enumerate(["backup", "primary"], 1)
+                ],
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status", [400, 401, 403, 429, 500, 503, 529])
+async def test_sticky_http_errors_are_returned_unchanged(
+    store, recorder, stream, status
+):
+    payload = b'{ "custom_error": "' + b"x" * 1024 + b'", "code": 123 }\n'
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        return httpx.Response(
+            status,
+            content=payload,
+            headers={
+                "Content-Type": "application/problem+json; charset=utf-8",
+                "Retry-After": "Thu, 01 Jan 2037 00:00:00 GMT",
+                "WWW-Authenticate": 'Bearer realm="upstream"',
+                "X-Request-ID": "upstream-id",
+                "Anthropic-Ratelimit-Requests-Remaining": "0",
+                "Connection": "keep-alive, x-ratelimit-private",
+                "X-Ratelimit-Private": "connection-only",
+                "Set-Cookie": "upstream=session",
+            },
+        )
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        engine = Router(config, upstream)
+        app.state.router_engine = engine
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages",
+                json={"model": "m", "stream": stream, "max_tokens": 10, "messages": []},
+            )
+    assert response.status_code == status
+    assert response.content == payload
+    assert response.headers["content-type"] == "application/problem+json; charset=utf-8"
+    assert response.headers["content-length"] == str(len(payload))
+    assert response.headers["retry-after"] == "Thu, 01 Jan 2037 00:00:00 GMT"
+    assert response.headers["www-authenticate"] == 'Bearer realm="upstream"'
+    assert response.headers["x-request-id"] == "upstream-id"
+    assert response.headers["anthropic-ratelimit-requests-remaining"] == "0"
+    assert "connection" not in response.headers
+    assert "x-ratelimit-private" not in response.headers
+    assert "set-cookie" not in response.headers
+    assert attempted == ["primary.test"]
+    if status in {429, 529}:
+        assert engine.provider_gate.is_in_cooldown("primary")
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["status"] == "error"
+    assert call["attempt"] == 1
+    assert len(json.loads(call["failover_details"])) == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize(
+    "payload", [b"", b"\xff\x00upstream failure", b"<html>Unavailable</html>"]
+)
+async def test_sticky_preserves_non_json_and_compressed_errors(
+    store, recorder, stream, payload
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            503,
+            content=gzip.compress(payload),
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Encoding": "gzip",
+            },
+        )
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        app.state.router_engine = Router(config, upstream)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages", json={"model": "m", "stream": stream, "messages": []}
+            )
+    assert response.status_code == 503
+    assert response.content == payload
+    assert "content-encoding" not in response.headers
+    assert response.headers["content-length"] == str(len(payload))
+
+
+async def test_sticky_waits_for_slow_http_error_before_sending_headers(
+    store, recorder, monkeypatch
+):
+    monkeypatch.setattr(app_module, "_STREAM_FIRST_BYTE_PREFETCH_TIMEOUT", 0.001)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.03)
+        return httpx.Response(529, content=b"overloaded", headers={"Retry-After": "7"})
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        app.state.router_engine = Router(config, upstream)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages", json={"model": "m", "stream": True, "messages": []}
+            )
+    assert response.status_code == 529
+    assert response.content == b"overloaded"
+    assert response.headers["retry-after"] == "7"
+
+
+@pytest.mark.parametrize("started", [False, True])
+@pytest.mark.parametrize(
+    "error_data", [b'{"error":{"type":"rate_limit_error","extra":42}}', b"not-json"]
+)
+async def test_sticky_sse_error_frame_is_forwarded_once(
+    store, recorder, started, error_data
+):
+    prefix = (
+        b'event: message_start\ndata: {"type":"message_start"}\n\n' if started else b""
+    )
+    frame = (
+        b": upstream detail\r\nid: original-id\r\nevent: error\r\ndata: "
+        + error_data
+        + b"\r\n\r\n"
+    )
+    attempted: list[str] = []
+
+    async def chunks():
+        payload = prefix + frame
+        for index in range(0, len(payload), 7):
+            yield payload[index : index + 7]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        return httpx.Response(
+            200, content=chunks(), headers={"Content-Type": "text/event-stream"}
+        )
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        app.state.router_engine = Router(config, upstream)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages", json={"model": "m", "stream": True, "messages": []}
+            )
+    assert response.status_code == 200
+    assert response.content == prefix + frame
+    assert attempted == ["primary.test"]
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["status"] == "error"
+    assert call["attempt"] == 1
+
+
+@pytest.mark.parametrize("stream", [False, True])
+async def test_sticky_transport_failure_uses_gateway_error(store, recorder, stream):
+    attempted: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        raise httpx.ReadTimeout("upstream timed out", request=request)
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        app.state.router_engine = Router(config, upstream)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages",
+                json={"model": "m", "stream": stream, "messages": []},
+            )
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "api_error"
+    assert attempted == ["primary.test"]
+    await recorder.wait_idle(timeout=1)
+    call = await _only_call_detail(store)
+    assert call["status"] == "error"
+    assert call["attempt"] == 1
 
 
 async def _only_call_detail(store: CallStore) -> dict:
@@ -1229,7 +1442,7 @@ class TestMessages:
         assert resp.status_code == 429
         assert resp.headers.get("retry-after") in {"7", "6"}  # ceil of remaining
         assert int(resp.headers.get("retry-after", "0")) >= 6
-        assert resp.json()["error"]["type"] == "rate_limit_error"
+        assert resp.content == b"rl"
 
     @pytest.mark.asyncio
     async def test_stream_prefetch_timeout_still_returns_sse(
@@ -1710,11 +1923,17 @@ async def test_split_upstream_error_produces_valid_client_sse(
     ],
     ids=["empty", "comments-only", "undispatched-error", "partial-after-start"],
 )
+@pytest.mark.parametrize("mode", ["sticky", "failover"])
 async def test_incomplete_upstream_sse_never_records_success(
-    sample_config, store, recorder, content, started
+    sample_config, store, recorder, content, started, mode
 ):
     """Reject early EOF without silently discarding the failed response."""
     calls = 0
+    sample_config.router = RouterConfig(mode=mode)
+    vm = sample_config.models["haiku-router"]
+    vm.pinned_model = ModelRef(
+        provider=vm.providers[0].name, model=vm.providers[0].model
+    )
 
     def handler(request):
         nonlocal calls
@@ -1735,13 +1954,12 @@ async def test_incomplete_upstream_sse_never_records_success(
         finally:
             await original_router.http.aclose()
 
-    if started:
+    if started or (mode == "sticky" and content.startswith(b": keepalive")):
         assert response.status_code == 200
         events = app_module.SSEDecoder().feed(response.content)
-        assert [json.loads(event.data)["type"] for event in events] == [
-            "message_start",
-            "error",
-        ]
+        assert [json.loads(event.data)["type"] for event in events] == (
+            ["message_start", "error"] if started else ["error"]
+        )
     else:
         assert response.status_code == 502
         assert response.json()["error"]["type"] == "api_error"
