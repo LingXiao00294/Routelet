@@ -223,7 +223,7 @@ class TestProviderGateCooldown:
         await task
 
     async def test_queued_waiter_rechecks_cooldown(self):
-        """持有者进入冷却并释放槽位后，排队者应收到冷却错误而非立刻打上游."""
+        """持有者进入冷却并释放槽位后，排队者应收到冷却错误而非立刻打 Provider."""
         gate = ProviderGate()
         cfg = _cfg(max_concurrent=1, max_queue=2, queue_wait_timeout=2.0)
         entered = asyncio.Event()

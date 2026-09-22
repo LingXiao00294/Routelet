@@ -14,7 +14,7 @@ import httpx
 import structlog
 from anyio import CancelScope
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from structlog.contextvars import (
     bind_contextvars,
     bound_contextvars,
@@ -28,7 +28,11 @@ from agent_router.config import AppConfig
 from agent_router.db import CallStore
 from agent_router.monitoring import reconfigure_logging
 from agent_router.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
-from agent_router.providers.base import NonRetryableError
+from agent_router.providers.base import (
+    NonRetryableError,
+    UpstreamHTTPError,
+    UpstreamSSEError,
+)
 from agent_router.recording import CallRecorder
 from agent_router.responses import ManagedStreamingResponse
 from agent_router.routing import (
@@ -102,7 +106,7 @@ _REQUEST_ID_MAX_LEN = 128
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 # 与设计文档公开契约一致；流式读取会在超过上限的首个 chunk 立即停止，
-# 避免超大正文先完整进入内存、上游调用和持久化队列。
+# 避免超大正文先完整进入内存、Provider 调用和持久化队列。
 _MAX_REQUEST_BODY_BYTES = 50 * 1024 * 1024
 _FORWARDED_ANTHROPIC_HEADERS = ("anthropic-version", "anthropic-beta")
 
@@ -237,7 +241,7 @@ def create_app(
         states = await app.state.router_engine.circuit_breaker.get_all_states()
         return {name: state.value for name, state in states.items()}
 
-    @app.post("/api/circuit-breaker/{provider}/reset")
+    @app.post("/api/circuit-breaker/{provider:path}/reset")
     async def reset_circuit_breaker(provider: str):
         """重置指定 provider 的熔断状态."""
         await app.state.router_engine.circuit_breaker.reset(provider)
@@ -282,14 +286,15 @@ def create_app(
         try:
             if is_stream:
                 outcome: dict = {}
-                # 有界预取首个 chunk：快速失败可转 HTTP 429/503/502；
+                # sticky 等待 Provider 响应，保留错误 HTTP 状态；failover 有界预取，
                 # 超时则先返回 SSE 头，继续在响应体中等待首字节。
                 stream_agen: AsyncGenerator[bytes, None] = engine.route_stream(
                     upstream_body, outcome
                 )
                 try:
                     first_chunk, pending_first = await _prefetch_first_chunk(
-                        stream_agen
+                        stream_agen,
+                        routing_outcome=outcome,
                     )
                 except asyncio.CancelledError:
                     _record_cancelled_stream(
@@ -322,7 +327,7 @@ def create_app(
                     # 从此处开始由 _stream_wrapper 负责记录最终结果。
                     recording_claimed = True
                     # 客户端中途断开时必须 aclose 预取的 generator，
-                    # 否则 ProviderGate.slot / 上游响应会一直占用到 GC。
+                    # 否则 ProviderGate.slot / Provider 响应会一直占用到 GC。
                     try:
                         chunk = first_chunk
                         if pending_first is not None:
@@ -447,6 +452,19 @@ def create_app(
                 e, recorder, virtual_model, body, start_time, outcome=outcome
             )
 
+        except UpstreamHTTPError as e:
+            recorder.submit(
+                virtual_model=virtual_model,
+                status="error",
+                error_type="upstream_http_error",
+                error_message=str(e),
+                attempt=outcome.get("attempt", 0),
+                latency_ms=int((time.time() - start_time) * 1000),
+                request_body=body,
+                failover_details=outcome.get("_failures"),
+            )
+            return _upstream_error_response(e)
+
         except NonRetryableError as e:
             latency_ms = int((time.time() - start_time) * 1000)
             status_code = e.status_code or 502
@@ -527,7 +545,7 @@ def create_app(
                 status_code=response.status_code,
                 duration_ms=round((time.time() - start) * 1000),
             )
-            response.headers["X-Request-ID"] = request_id
+            response.headers.setdefault("X-Request-ID", request_id)
             return response
         except Exception:
             logger.error(
@@ -647,14 +665,47 @@ def _anthropic_error_response(
     )
 
 
+def _upstream_error_response(error: UpstreamHTTPError) -> Response:
+    """Preserve error payload and metadata, excluding transport-level headers.
+
+    HTTPX has already decoded content encoding; Starlette computes the new
+    content length. Only error-relevant end-to-end headers are forwarded.
+    """
+    response = Response(error.response.body, status_code=error.response.status_code)
+    connection_headers = {
+        token.strip().lower()
+        for name, value in error.response.headers
+        if name.lower() == "connection"
+        for token in value.split(",")
+    }
+    for name, value in error.response.headers:
+        name = name.lower()
+        if name in connection_headers:
+            continue
+        if name in {
+            "content-type",
+            "content-language",
+            "location",
+            "retry-after",
+            "www-authenticate",
+            "request-id",
+            "x-request-id",
+        } or name.startswith(("ratelimit-", "x-ratelimit-", "anthropic-ratelimit-")):
+            response.headers.append(name, value)
+    return response
+
+
 async def _prefetch_first_chunk(
     stream_agen: AsyncGenerator[bytes, None],
     *,
     timeout: float | None = None,
+    routing_outcome: dict | None = None,
 ) -> tuple[bytes | None, asyncio.Task[bytes] | None]:
-    """有界预取流式首 chunk，超时不取消上游任务.
+    """有界预取流式首 chunk，超时不取消 Provider 任务.
 
     ``timeout`` 默认读取模块常量（调用时求值，便于测试 monkeypatch）。
+    仅实际开始的 failover 尝试可提前发送 SSE 头；sticky 或尚未选定 Provider 时
+    等待首块，避免惰性迭代或热重载使预取策略与路由模式不一致。
     返回前调用方若取消或发生异常，负责取消并等待预取任务，然后关闭源流。
 
     Returns:
@@ -668,7 +719,13 @@ async def _prefetch_first_chunk(
     try:
         done, _pending = await asyncio.wait({task}, timeout=wait_for)
         if not done:
-            return None, task
+            if routing_outcome is None:
+                return None, task
+            if routing_outcome.get("_stream_mode") == "failover":
+                # No await between checking the selected mode and committing it.
+                routing_outcome["_stream_response_mode"] = "failover"
+                return None, task
+            await asyncio.wait({task})
         try:
             return task.result(), None
         except StopAsyncIteration:
@@ -902,7 +959,7 @@ async def _stream_wrapper(
             _update_stream_usage(usage_decoder.feed(chunk), usage, usage_events_seen)
 
             # 先更新 usage 再交付 chunk；若客户端在发送期间断开，取消记录仍能
-            # 保留这个已从上游收到的 chunk 中的 token 信息。
+            # 保留这个已从 Provider 收到的 chunk 中的 token 信息。
             yield chunk
 
         # 流成功完成
@@ -960,6 +1017,9 @@ async def _stream_wrapper(
             failover_details=failover,
         )
         recorded = True
+        if isinstance(e, UpstreamSSEError):
+            # Routing already yielded the original error frame; do not duplicate it.
+            return
         err_type = _stream_error_type(e)
         error_body = json.dumps(
             {
@@ -985,7 +1045,7 @@ async def _stream_wrapper(
                 )
         finally:
             try:
-                # 即使记录失败，也必须释放上游连接与 gate slot。
+                # 即使记录失败，也必须释放 Provider 连接与 gate slot。
                 await stream.aclose()
             except Exception:
                 logger.warning(

@@ -23,7 +23,13 @@ from agent_router.provider_gate import (
     ProviderGate,
 )
 from agent_router.providers.anthropic_compat import AnthropicCompatProvider
-from agent_router.providers.base import BaseProvider, NonRetryableError, RetryableError
+from agent_router.providers.base import (
+    BaseProvider,
+    NonRetryableError,
+    RetryableError,
+    UpstreamHTTPError,
+    UpstreamSSEError,
+)
 from agent_router.sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
@@ -196,11 +202,12 @@ class Router:
         *,
         permit: CircuitPermit | None,
         allow_failover: bool,
+        passthrough_errors: bool = False,
     ) -> None:
         """Shared error handling for both route methods.
 
         For NonRetryableError, re-raises after logging.
-        For sticky mode (allow_failover=False), re-raises retryable errors too.
+        Sticky mode preserves available upstream HTTP responses and SSE frames.
         """
         p_latency = (time.time() - p_start) * 1000
         is_retryable = isinstance(e, RetryableError)
@@ -256,6 +263,12 @@ class Router:
             rate_limited=rate_limited,
             provider_latency_ms=round(p_latency),
         )
+
+        if passthrough_errors:
+            if e.upstream_response is not None:
+                raise UpstreamHTTPError(str(e), e.upstream_response) from e
+            if e.upstream_frame is not None:
+                raise UpstreamSSEError(str(e), e.upstream_frame) from e
 
         if not is_retryable:
             raise e
@@ -421,7 +434,7 @@ class Router:
         """非流式路由: 返回第一个成功 provider 的响应 JSON.
 
         outcome 可选字典，成功时写入最终 provider、模型、URL 和价格信息。
-        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        attempt 只统计真正开始的 Provider 调用，在失败及热重载重选后仍累计保留。
         """
         outcome = outcome if outcome is not None else {}
         outcome["attempt"] = 0
@@ -566,6 +579,7 @@ class Router:
                         i,
                         permit=permit,
                         allow_failover=allow_failover,
+                        passthrough_errors=not allow_failover,
                     )
                 except StickyRateLimited as srl:
                     raise NoProviderAvailableError(
@@ -587,7 +601,7 @@ class Router:
         """流式路由: 返回第一个成功 provider 的 SSE 流.
 
         outcome 可选字典，开始调用时写入 provider、模型、URL 和价格信息。
-        attempt 只统计真正开始的上游调用，在失败及热重载重选后仍累计保留。
+        attempt 只统计真正开始的 Provider 调用，在失败及热重载重选后仍累计保留。
         每个 SSE 事件完整校验后才交付，首个事件前的错误仍允许故障转移。
         """
         outcome = outcome if outcome is not None else {}
@@ -595,6 +609,10 @@ class Router:
         client_started = False
         while True:
             generation = self._config_generation
+            response_mode = outcome.get("_stream_response_mode")
+            if response_mode is not None and self.config.router.mode != response_mode:
+                raise RuntimeError("routing mode changed after stream response started")
+            outcome.pop("_stream_mode", None)
             generation_stream = self._route_stream_once(
                 request_body,
                 outcome,
@@ -701,6 +719,8 @@ class Router:
                             "cache_write": provider_cfg.cache_write_price_per_million,
                         }
                     error_decoder = SSEDecoder()
+                    outcome["_stream_mode"] = "failover" if allow_failover else "sticky"
+                    data_event_seen = False
                     async with aclosing(provider.send_stream(request_body)) as upstream:
                         async for chunk in upstream:
                             try:
@@ -711,8 +731,13 @@ class Router:
                                 ) from exc
                             for frame in frames:
                                 if frame.event is not None:
-                                    _raise_for_stream_error(frame.event)
-                                elif not client_started:
+                                    try:
+                                        _raise_for_stream_error(frame.event)
+                                    except (RetryableError, NonRetryableError) as e:
+                                        e.upstream_frame = frame.raw
+                                        raise
+                                    data_event_seen = True
+                                elif not client_started and allow_failover:
                                     # 初始 keepalive 不能决定使用哪个 Provider。
                                     continue
                                 client_started = True
@@ -721,7 +746,7 @@ class Router:
                         error_decoder.finish()
                     except SSEDecodeError as exc:
                         raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
-                    if not client_started:
+                    if not data_event_seen:
                         raise NonRetryableError(
                             "Upstream stream ended without an SSE data event"
                         )
@@ -776,7 +801,11 @@ class Router:
                         i,
                         permit=permit,
                         allow_failover=can_failover,
+                        passthrough_errors=not allow_failover,
                     )
+                except UpstreamSSEError as upstream_error:
+                    yield upstream_error.frame
+                    raise
                 except StickyRateLimited as srl:
                     raise NoProviderAvailableError(
                         virtual_model,
@@ -996,7 +1025,7 @@ class AllProvidersFailedError(Exception):
 
 
 class NoProviderAvailableError(Exception):
-    """本地容量耗尽或上游限流导致无可用 provider."""
+    """本地容量耗尽或 Provider 限流导致无可用 provider."""
 
     def __init__(
         self,
@@ -1010,7 +1039,7 @@ class NoProviderAvailableError(Exception):
         self.errors = errors
         self.kind = kind
         self.retry_after = retry_after
-        label = "本地容量不足" if kind == "capacity" else "上游限流"
+        label = "本地容量不足" if kind == "capacity" else "Provider 限流"
         summary = "; ".join(
             f"[{e['provider']}:{e['model']}] {e['error']}" for e in errors
         )

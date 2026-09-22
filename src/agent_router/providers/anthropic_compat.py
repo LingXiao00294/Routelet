@@ -9,7 +9,12 @@ from typing import Final
 import httpx
 from structlog import get_logger
 
-from agent_router.providers.base import BaseProvider, NonRetryableError, RetryableError
+from agent_router.providers.base import (
+    BaseProvider,
+    NonRetryableError,
+    RetryableError,
+    UpstreamResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -53,10 +58,16 @@ def parse_retry_after(value: str | None) -> float | None:
 def _classify_error(e: httpx.HTTPStatusError) -> Exception:
     status = e.response.status_code
     body = e.response.text[:500]
+    upstream_response = UpstreamResponse(
+        status_code=status,
+        body=e.response.content,
+        headers=tuple(e.response.headers.multi_items()),
+    )
     if status in AUTH_STATUSES:
         return RetryableError(
             f"HTTP {status}: {body}",
             immediate_break=True,
+            upstream_response=upstream_response,
         )
     if status in RATE_LIMIT_STATUSES:
         retry_after = parse_retry_after(e.response.headers.get("Retry-After"))
@@ -64,12 +75,16 @@ def _classify_error(e: httpx.HTTPStatusError) -> Exception:
             f"HTTP {status}: {body}",
             rate_limited=True,
             retry_after=retry_after,
+            upstream_response=upstream_response,
         )
     if 500 <= status < 600:
-        return RetryableError(f"HTTP {status}: {body}")
+        return RetryableError(
+            f"HTTP {status}: {body}", upstream_response=upstream_response
+        )
     return NonRetryableError(
         f"HTTP {status}: {body}",
         status_code=status if 400 <= status < 500 else None,
+        upstream_response=upstream_response,
     )
 
 
@@ -168,7 +183,7 @@ class AnthropicCompatProvider(BaseProvider):
         """Replace the virtual model and remove router-only metadata."""
         body = {**request_body}
         body.pop(FORWARDED_ANTHROPIC_HEADERS_KEY, None)
-        # 兼容旧的 body 内版本提示，但不把非标准字段发送给上游。
+        # 兼容旧的 body 内版本提示，但不把非标准字段发送给 Provider。
         body.pop("anthropic_version", None)
         body["model"] = self.config.model
         return body
