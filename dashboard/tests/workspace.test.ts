@@ -124,6 +124,41 @@ describe("configuration publication", () => {
   });
 });
 describe("network behavior", () => {
+  test("partial telemetry failures retain stale values without discarding healthy endpoints", async () => {
+    const failed = new Set<string>();
+    let version = 1;
+    globalThis.fetch = (async (url) => {
+      const path = String(url);
+      if (failed.has(path))
+        return response({ detail: "temporarily unavailable" }, 503);
+      if (path === "/health") return response({ status: "ok" });
+      if (path === "/api/metrics/summary")
+        return response({ total_calls: version });
+      if (path === "/api/circuit-breaker")
+        return response({ main: version === 1 ? "open" : "closed" });
+      return response([]);
+    }) as typeof fetch;
+    const store = useTelemetry();
+    await store.refresh();
+    expect(store.summary?.total_calls).toBe(1);
+    failed.add("/api/metrics/summary");
+    version = 2;
+    await store.refresh();
+    expect(store.connected).toBe(true);
+    expect(store.summary?.total_calls).toBe(1);
+    expect(store.circuits.main).toBe("closed");
+    expect(store.error).toContain("汇总统计");
+    failed.clear();
+    failed.add("/health");
+    await store.refresh();
+    expect(store.connected).toBe(false);
+    expect(store.summary?.total_calls).toBe(2);
+    expect(store.error).toContain("健康检查");
+    failed.clear();
+    await store.refresh();
+    expect(store.connected).toBe(true);
+    expect(store.error).toBe("");
+  });
   test("renders nested API errors and non-JSON responses", async () => {
     globalThis.fetch = (async () =>
       response({ error: { message: "upstream failed" } }, 502)) as typeof fetch;

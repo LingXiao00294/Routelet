@@ -387,9 +387,13 @@ test("playground select chevron stays inset and centered in both themes and view
       await expect(arrow).toHaveCSS("pointer-events", "none");
       const field = await select.boundingBox();
       const icon = await arrow.boundingBox();
-      if (!field || !icon) throw new Error("Missing playground select geometry");
+      if (!field || !icon)
+        throw new Error("Missing playground select geometry");
       expect(field.x + field.width - icon.x - icon.width).toBeCloseTo(14, 0);
-      expect(icon.y + icon.height / 2).toBeCloseTo(field.y + field.height / 2, 0);
+      expect(icon.y + icon.height / 2).toBeCloseTo(
+        field.y + field.height / 2,
+        0,
+      );
       await page.screenshot({
         path: `test-results/playground-select-${theme}-${width}.png`,
         fullPage: true,
@@ -674,6 +678,11 @@ test("configuration validation and masked credentials survive provider editing",
     .click();
   const dialog = page.getByRole("dialog");
   await expect(dialog.getByLabel(/API Key/)).toHaveValue("");
+  await dialog.getByLabel(/API Key/).fill("abcd****wxyz");
+  await dialog.getByRole("button", { name: "应用到草稿" }).click();
+  await expect(dialog).toContainText("不能使用脱敏占位符");
+  expect(state.writes).toHaveLength(0);
+  await dialog.getByLabel(/API Key/).fill("");
   await dialog.getByLabel(/Base URL/).fill("https://updated.example.test");
   await dialog.getByRole("button", { name: "应用到草稿" }).click();
   await page.getByRole("button", { name: "检查并发布" }).click();

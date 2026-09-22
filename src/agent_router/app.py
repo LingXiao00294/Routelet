@@ -241,7 +241,7 @@ def create_app(
         states = await app.state.router_engine.circuit_breaker.get_all_states()
         return {name: state.value for name, state in states.items()}
 
-    @app.post("/api/circuit-breaker/{provider}/reset")
+    @app.post("/api/circuit-breaker/{provider:path}/reset")
     async def reset_circuit_breaker(provider: str):
         """重置指定 provider 的熔断状态."""
         await app.state.router_engine.circuit_breaker.reset(provider)
@@ -294,7 +294,7 @@ def create_app(
                 try:
                     first_chunk, pending_first = await _prefetch_first_chunk(
                         stream_agen,
-                        wait_for_upstream=engine.config.router.mode == "sticky",
+                        routing_outcome=outcome,
                     )
                 except asyncio.CancelledError:
                     _record_cancelled_stream(
@@ -685,6 +685,7 @@ def _upstream_error_response(error: UpstreamHTTPError) -> Response:
         if name in {
             "content-type",
             "content-language",
+            "location",
             "retry-after",
             "www-authenticate",
             "request-id",
@@ -698,12 +699,13 @@ async def _prefetch_first_chunk(
     stream_agen: AsyncGenerator[bytes, None],
     *,
     timeout: float | None = None,
-    wait_for_upstream: bool = False,
+    routing_outcome: dict | None = None,
 ) -> tuple[bytes | None, asyncio.Task[bytes] | None]:
     """有界预取流式首 chunk，超时不取消上游任务.
 
     ``timeout`` 默认读取模块常量（调用时求值，便于测试 monkeypatch）。
-    ``wait_for_upstream`` 禁止提前发送 SSE 响应头，仍受 Provider 超时约束。
+    仅实际开始的 failover 尝试可提前发送 SSE 头；sticky 或尚未选定上游时
+    等待首块，避免惰性迭代或热重载使预取策略与路由模式不一致。
     返回前调用方若取消或发生异常，负责取消并等待预取任务，然后关闭源流。
 
     Returns:
@@ -713,13 +715,17 @@ async def _prefetch_first_chunk(
         - 业务异常（限流/全失败等）：直接向上抛出
     """
     wait_for = _STREAM_FIRST_BYTE_PREFETCH_TIMEOUT if timeout is None else timeout
-    if wait_for_upstream:
-        wait_for = None
     task: asyncio.Task[bytes] = asyncio.create_task(anext(stream_agen))
     try:
         done, _pending = await asyncio.wait({task}, timeout=wait_for)
         if not done:
-            return None, task
+            if routing_outcome is None:
+                return None, task
+            if routing_outcome.get("_stream_mode") == "failover":
+                # No await between checking the selected mode and committing it.
+                routing_outcome["_stream_response_mode"] = "failover"
+                return None, task
+            await asyncio.wait({task})
         try:
             return task.result(), None
         except StopAsyncIteration:

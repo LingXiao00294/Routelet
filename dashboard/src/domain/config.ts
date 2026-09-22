@@ -142,6 +142,16 @@ export function validateConfig(config: Config, existing?: Config): string[] {
     if (!name.trim()) errors.push("上游名称不能为空");
     if (!provider.api_key.trim() && !own(existing?.providers ?? {}, name))
       errors.push(name + "：新上游需要 API Key");
+    if (
+      own(existing?.providers ?? {}, name) &&
+      provider.api_key !== existing?.providers[name].api_key &&
+      (/^\*+$/.test(provider.api_key) ||
+        /^.{4}\*+.{4}$/s.test(provider.api_key) ||
+        provider.api_key === "${PLACEHOLDER}")
+    )
+      errors.push(
+        name + "：请输入完整 API Key，不能使用脱敏占位符；留空可保留原密钥",
+      );
     try {
       const url = new URL(provider.base_url);
       if (

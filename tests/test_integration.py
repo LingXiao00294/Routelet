@@ -5,6 +5,7 @@ import gzip
 import json
 from types import SimpleNamespace
 from typing import cast
+from urllib.parse import quote
 
 import httpx
 import pytest
@@ -169,6 +170,158 @@ async def test_sticky_waits_for_slow_http_error_before_sending_headers(
     assert response.status_code == 529
     assert response.content == b"overloaded"
     assert response.headers["retry-after"] == "7"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("status", [301, 302, 307, 308])
+async def test_sticky_preserves_upstream_redirect_location(
+    store, recorder, stream, status
+):
+    location = "https://primary.test/canonical/v1/messages?version=2"
+    attempted = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        return httpx.Response(status, content=b"moved", headers={"Location": location})
+
+    config = _passthrough_config()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        app.state.router_engine = Router(config, upstream)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages", json={"model": "m", "stream": stream, "messages": []}
+            )
+    assert response.status_code == status
+    assert response.headers["location"] == location
+    assert response.content == b"moved"
+    assert attempted == ["primary.test"]
+
+
+@pytest.mark.parametrize("provider", ["plain", "a/b", "a/b/reset", "中文/模型 %2F"])
+async def test_circuit_reset_preserves_complete_provider_name(
+    store, recorder, provider
+):
+    config = _passthrough_config()
+    async with httpx.AsyncClient() as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        engine = Router(config, upstream)
+        app.state.router_engine = engine
+        await engine.circuit_breaker.record_failure(provider, immediate=True)
+        await engine.circuit_breaker.record_failure("other", immediate=True)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                f"/api/circuit-breaker/{quote(provider, safe='')}/reset"
+            )
+            states = (await client.get("/api/circuit-breaker")).json()
+    assert response.status_code == 200
+    assert response.json()["provider"] == provider
+    assert provider not in states
+    assert (await engine.circuit_breaker.state(provider)).value == "closed"
+    assert states["other"] == "open"
+
+
+@pytest.mark.parametrize(
+    "reload_point", ["lazy_start", "candidate_discovery", "active_attempt"]
+)
+async def test_stream_prefetch_uses_actual_routing_generation(
+    store, recorder, monkeypatch, reload_point
+):
+    monkeypatch.setattr(app_module, "_STREAM_FIRST_BYTE_PREFETCH_TIMEOUT", 0.001)
+    config = _passthrough_config()
+    if reload_point != "active_attempt":
+        config.router.mode = "failover"
+    next_config = _passthrough_config()
+    if reload_point == "active_attempt":
+        next_config.router.mode = "failover"
+    attempted = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        if reload_point == "active_attempt":
+            await engine.reload_config(next_config)
+        await asyncio.sleep(0.03)
+        return httpx.Response(
+            529, content=b"original slow error", headers={"Retry-After": "7"}
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        app = create_app(config, store, call_recorder=recorder)
+        engine = Router(config, upstream)
+        app.state.router_engine = engine
+        if reload_point == "lazy_start":
+            original_prefetch = app_module._prefetch_first_chunk
+
+            async def reload_before_iteration(stream_agen, **kwargs):
+                await engine.reload_config(next_config)
+                return await original_prefetch(stream_agen, **kwargs)
+
+            monkeypatch.setattr(
+                app_module, "_prefetch_first_chunk", reload_before_iteration
+            )
+        elif reload_point == "candidate_discovery":
+            original_discovery = engine._get_providers
+            reloaded = False
+
+            async def reload_during_discovery(model):
+                nonlocal reloaded
+                providers = await original_discovery(model)
+                if not reloaded:
+                    reloaded = True
+                    await engine.reload_config(next_config)
+                return providers
+
+            monkeypatch.setattr(engine, "_get_providers", reload_during_discovery)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/v1/messages", json={"model": "m", "stream": True, "messages": []}
+            )
+    assert response.status_code == 529
+    assert response.content == b"original slow error"
+    assert response.headers["retry-after"] == "7"
+    assert attempted == ["primary.test"]
+
+
+async def test_stream_cannot_switch_to_sticky_after_early_headers(store, recorder):
+    config = _passthrough_config()
+    config.router.mode = "failover"
+    release = asyncio.Event()
+    started = asyncio.Event()
+    attempted = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        attempted.append(request.url.host)
+        started.set()
+        await release.wait()
+        return httpx.Response(503, content=b"retry")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as upstream:
+        engine = Router(config, upstream)
+        outcome: dict = {}
+        stream = engine.route_stream(
+            {"model": "m", "stream": True, "messages": []}, outcome
+        )
+        prefetch = asyncio.create_task(
+            _prefetch_first_chunk(stream, timeout=0.02, routing_outcome=outcome)
+        )
+        await started.wait()
+        first, pending = await prefetch
+        assert first is None and pending is not None
+        assert outcome["_stream_response_mode"] == "failover"
+        await engine.reload_config(_passthrough_config())
+        release.set()
+        try:
+            with pytest.raises(RuntimeError, match="routing mode changed"):
+                await pending
+        finally:
+            await _close_prefetched_stream(stream, pending)
+    assert attempted == ["backup.test"]
 
 
 @pytest.mark.parametrize("started", [False, True])

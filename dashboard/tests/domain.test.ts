@@ -12,10 +12,12 @@ import {
 } from "../src/domain/config";
 import {
   csvCell,
+  compact,
   fillDays,
   latency,
   money,
   parseAttempts,
+  totalTokens,
 } from "../src/domain/format";
 import { EventDecoder } from "../src/services/stream";
 
@@ -134,8 +136,54 @@ describe("configuration contracts", () => {
       validateConfig(value).some((error) => error.includes("API Key")),
     ).toBe(true);
   });
+  test("existing keys reject changed mask placeholders but preserve unchanged masks and blanks", () => {
+    const existing = config();
+    existing.providers.a.api_key = "sk-a********test";
+    const candidate = clone(existing);
+    for (const key of [
+      "abcd****wxyz",
+      "********",
+      "abcd*wxyz",
+      "${PLACEHOLDER}",
+    ]) {
+      candidate.providers.a.api_key = key;
+      expect(validateConfig(candidate, existing).join(" ")).toContain(
+        "脱敏占位符",
+      );
+    }
+    for (const key of [
+      "",
+      existing.providers.a.api_key,
+      "real-new-secret",
+      "${PROVIDER_API_KEY}",
+    ]) {
+      candidate.providers.a.api_key = key;
+      expect(validateConfig(candidate, existing)).toEqual([]);
+    }
+  });
 });
 describe("honest metric presentation", () => {
+  test("unknown token usage is distinct from known zero and partial usage", () => {
+    const usage = {
+      input_tokens: null,
+      output_tokens: null,
+      cache_read_tokens: null,
+      cache_write_tokens: null,
+    };
+    expect(compact(totalTokens(usage))).toBe("—");
+    expect(compact(totalTokens({ ...usage, output_tokens: 0 }))).toBe("0");
+    expect(
+      totalTokens({ ...usage, input_tokens: 12, cache_read_tokens: 3 }),
+    ).toBe(15);
+    expect(
+      totalTokens({
+        input_tokens: 12,
+        output_tokens: 4,
+        cache_read_tokens: 3,
+        cache_write_tokens: 1,
+      }),
+    ).toBe(20);
+  });
   test("null, overflowing and zero costs have distinct presentation", () => {
     expect(money(null)).toBe("—");
     expect(money(Infinity)).toBe("—");
@@ -176,6 +224,40 @@ describe("honest metric presentation", () => {
   });
 });
 describe("stream framing", () => {
+  test.each(["\r", "\n", "\r\n"])(
+    "accepts %j line endings at every network split",
+    (ending) => {
+      const wire = [
+        "\uFEFF: heartbeat",
+        "event: message_start",
+        "data: first",
+        "data: second",
+        "",
+        "event: message_stop",
+        'data: {"type":"message_stop"}',
+        "",
+        "",
+      ].join(ending);
+      const expected = [
+        { event: "message_start", data: "first\nsecond" },
+        { event: "message_stop", data: '{"type":"message_stop"}' },
+      ];
+      for (let split = 0; split <= wire.length; split++) {
+        const decoder = new EventDecoder();
+        expect([
+          ...decoder.push(wire.slice(0, split)),
+          ...decoder.push(""),
+          ...decoder.push(wire.slice(split)),
+          ...decoder.push("", true),
+        ]).toEqual(expected);
+      }
+      const decoder = new EventDecoder();
+      expect([
+        ...Array.from(wire).flatMap((character) => decoder.push(character)),
+        ...decoder.push("", true),
+      ]).toEqual(expected);
+    },
+  );
   test("handles BOM, split CRLF, comments and multiline data", () => {
     const decoder = new EventDecoder();
     expect(decoder.push("\uFEFFevent: message_start\r")).toEqual([]);

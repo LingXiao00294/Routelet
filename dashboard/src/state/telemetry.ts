@@ -31,7 +31,7 @@ export const useTelemetry = defineStore("telemetry", () => {
       loading.value = true;
       try {
         const [health, stats, trend, groups, actual, calls, states] =
-          await Promise.all([
+          await Promise.allSettled([
             request<{ status: string }>("/health"),
             request<Summary>("/api/metrics/summary"),
             request<Daily[]>("/api/metrics/daily?days=" + period),
@@ -40,18 +40,35 @@ export const useTelemetry = defineStore("telemetry", () => {
             request<CallPage>("/api/calls?page=1&size=6"),
             request<CircuitStates>("/api/circuit-breaker"),
           ]);
-        connected.value = health.status === "ok";
-        summary.value = stats;
-        if (days.value === period) daily.value = trend;
-        models.value = groups;
-        realModels.value = actual;
-        recent.value = calls;
-        circuits.value = states;
-        updated.value = new Date();
-        error.value = "";
-      } catch (reason) {
-        error.value = errorText(reason);
-        connected.value = false;
+        connected.value =
+          health.status === "fulfilled" && health.value.status === "ok";
+        if (stats.status === "fulfilled") summary.value = stats.value;
+        if (trend.status === "fulfilled" && days.value === period)
+          daily.value = trend.value;
+        if (groups.status === "fulfilled") models.value = groups.value;
+        if (actual.status === "fulfilled") realModels.value = actual.value;
+        if (calls.status === "fulfilled") recent.value = calls.value;
+        if (states.status === "fulfilled") circuits.value = states.value;
+        const results = [health, stats, trend, groups, actual, calls, states];
+        const labels = [
+          "健康检查",
+          "汇总统计",
+          "请求趋势",
+          "路由统计",
+          "实际模型统计",
+          "最近调用",
+          "熔断状态",
+        ];
+        const failures = results.flatMap((result, index) =>
+          result.status === "rejected"
+            ? [labels[index] + "：" + errorText(result.reason)]
+            : [],
+        );
+        if (health.status === "fulfilled" && !connected.value)
+          failures.unshift("健康检查：服务状态异常");
+        if (results.some((result) => result.status === "fulfilled"))
+          updated.value = new Date();
+        error.value = failures.join("；");
       } finally {
         loading.value = false;
         pending = null;

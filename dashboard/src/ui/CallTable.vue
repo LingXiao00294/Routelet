@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import type { Call } from "../domain/types";
-import { compact, dateTime, latency, money } from "../domain/format";
+import {
+  compact,
+  dateTime,
+  latency,
+  money,
+  totalTokens,
+} from "../domain/format";
 import Icon from "./Icon.vue";
 defineProps<{ calls: Call[]; compactView?: boolean }>();
 defineEmits<{ select: [id: string] }>();
@@ -57,14 +63,7 @@ defineEmits<{ select: [id: string] }>();
           </td>
           <td class="numeric mono">{{ latency(call.latency_ms) }}</td>
           <td v-if="!compactView" class="numeric mono">
-            {{
-              compact(
-                (call.input_tokens ?? 0) +
-                  (call.output_tokens ?? 0) +
-                  (call.cache_read_tokens ?? 0) +
-                  (call.cache_write_tokens ?? 0),
-              )
-            }}
+            {{ compact(totalTokens(call)) }}
           </td>
           <td class="numeric mono">{{ money(call.cost_usd) }}</td>
           <td>

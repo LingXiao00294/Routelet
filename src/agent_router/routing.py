@@ -609,6 +609,10 @@ class Router:
         client_started = False
         while True:
             generation = self._config_generation
+            response_mode = outcome.get("_stream_response_mode")
+            if response_mode is not None and self.config.router.mode != response_mode:
+                raise RuntimeError("routing mode changed after stream response started")
+            outcome.pop("_stream_mode", None)
             generation_stream = self._route_stream_once(
                 request_body,
                 outcome,
@@ -715,6 +719,7 @@ class Router:
                             "cache_write": provider_cfg.cache_write_price_per_million,
                         }
                     error_decoder = SSEDecoder()
+                    outcome["_stream_mode"] = "failover" if allow_failover else "sticky"
                     data_event_seen = False
                     async with aclosing(provider.send_stream(request_body)) as upstream:
                         async for chunk in upstream:

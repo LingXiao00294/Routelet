@@ -4,10 +4,19 @@ export interface StreamEvent {
 }
 export class EventDecoder {
   private buffer = "";
+  private pendingCR = false;
   push(text: string, final = false): StreamEvent[] {
+    if (this.pendingCR) {
+      text = "\r" + text;
+      this.pendingCR = false;
+    }
+    // Hold a trailing CR until we know whether the next chunk starts with LF.
+    if (!final && text.endsWith("\r")) {
+      text = text.slice(0, -1);
+      this.pendingCR = true;
+    }
+    text = text.replace(/\r\n|\r/g, "\n");
     this.buffer += text;
-    // Normalize CRLF after buffering so a CR/LF split across reads is safe.
-    this.buffer = this.buffer.replace(/\r\n/g, "\n");
     const blocks = this.buffer.split("\n\n");
     this.buffer = blocks.pop() ?? "";
     if (final && this.buffer.trim()) {

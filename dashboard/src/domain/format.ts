@@ -1,4 +1,23 @@
-import type { Attempt, Daily } from "./types";
+import type { Attempt, Call, Daily } from "./types";
+export function totalTokens(
+  call: Pick<
+    Call,
+    | "input_tokens"
+    | "output_tokens"
+    | "cache_read_tokens"
+    | "cache_write_tokens"
+  >,
+): number | null {
+  const values = [
+    call.input_tokens,
+    call.output_tokens,
+    call.cache_read_tokens,
+    call.cache_write_tokens,
+  ];
+  return values.every((value) => value == null)
+    ? null
+    : values.reduce<number>((total, value) => total + (value ?? 0), 0);
+}
 const number = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 1 });
 export const count = (value?: number | null): string =>
   value == null || !Number.isFinite(value) ? "—" : number.format(value);
