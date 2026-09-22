@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 
 from routelet.cli.server import command_start
+from routelet.paths import resolve_path
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -31,11 +32,13 @@ def run(argv: Sequence[str] | None = None) -> int:
         description="启动 Routelet API 和 Dashboard，并打开浏览器。",
     )
     parser.add_argument("--version", action="version", version=package_version)
-    parser.add_argument("-c", "--config", default="config.toml", help="配置文件路径")
-    parser.add_argument("--db", default="calls.db", help="调用记录数据库路径")
+    parser.add_argument(
+        "-c", "--config", help="配置文件路径（默认 ~/.routelet/config.toml）"
+    )
+    parser.add_argument("--db", help="调用记录数据库路径（默认 ~/.routelet/calls.db）")
     parser.add_argument("--host", help="覆盖 server.host")
     parser.add_argument("-p", "--port", type=_port, help="覆盖 server.port")
-    parser.add_argument("--env-file", default=".env", help="环境变量文件路径")
+    parser.add_argument("--env-file", help="环境变量文件路径（默认 ~/.routelet/.env）")
     parser.add_argument("--no-env-file", action="store_true", help="不加载环境变量文件")
     parser.add_argument("--dist", help="Dashboard 静态文件目录")
     parser.add_argument("--no-browser", action="store_true", help="启动后不打开浏览器")
@@ -47,11 +50,15 @@ def run(argv: Sequence[str] | None = None) -> int:
     try:
         args = parser.parse_args(argv)
         return command_start(
-            config_path=args.config,
-            db=args.db,
+            config_path=str(resolve_path(args.config, "config.toml")),
+            db=(
+                ":memory:"
+                if args.db == ":memory:"
+                else str(resolve_path(args.db, "calls.db"))
+            ),
             host=args.host,
             port=args.port,
-            env_file=args.env_file,
+            env_file=str(resolve_path(args.env_file, ".env")),
             no_env_file=args.no_env_file,
             dist_path=args.dist,
             no_browser=args.no_browser,

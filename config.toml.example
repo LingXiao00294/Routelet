@@ -1,4 +1,4 @@
-# 手工配置参考；routelet 首次运行会自动创建不含 Provider 和模型的空配置。
+# 手工配置参考；routelet 首次运行会在 ~/.routelet/config.toml 创建空配置。
 # API 与 Dashboard 共用下方监听地址和端口。
 # Provider、模型、密钥变量与 .example 地址均为占位符，请替换为实际值。
 # type 是协议标识，需保留示例值以使用当前支持的 Messages API。
@@ -6,7 +6,7 @@
 host = "127.0.0.1"
 port = 9456
 log_level = "info"
-log_file = "logs/routelet.log"
+log_file = "logs/routelet.log"  # 相对 ~/.routelet/；绝对路径和 ~ 路径按指定位置写入
 log_max_bytes = 10000000
 log_backup_count = 5
 

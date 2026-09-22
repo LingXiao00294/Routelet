@@ -26,7 +26,7 @@ uv tool install .
 routelet
 ```
 
-程序在同一个进程、同一个端口提供 API 和 Dashboard，并在监听成功后自动打开 `http://127.0.0.1:9456`。首次运行会在当前目录创建空的 `config.toml`，可直接在页面添加 Provider、实际模型和虚拟模型，再连接客户端。已有配置不会被覆盖；格式错误时启动失败并显示原因。按 `Ctrl+C` 同时停止前后端服务。
+程序在同一个进程、同一个端口提供 API 和 Dashboard，并在监听成功后自动打开 `http://127.0.0.1:9456`。首次运行会自动创建 `~/.routelet/` 和空的 `~/.routelet/config.toml`，可直接在页面添加 Provider、实际模型和虚拟模型，再连接客户端。已有配置不会被覆盖；格式错误时启动失败并显示原因。按 `Ctrl+C` 同时停止前后端服务。
 
 源码开发也可使用 `uv sync --frozen` 后执行 `uv run routelet`。安装包包含构建好的前端，使用时无需 Node.js / Bun。如果命令不在 PATH 中，运行 `uv tool update-shell` 后重开终端。
 
@@ -37,16 +37,29 @@ routelet --help
 routelet --no-browser                  # 无桌面环境或不自动打开浏览器
 routelet -c config.toml --db calls.db   # 指定配置和数据库
 routelet --host 127.0.0.1 --port 9457  # 同时更改 API 与页面的监听地址
-routelet --env-file custom.env         # 默认加载当前目录的 .env
+routelet --env-file custom.env         # 覆盖默认的 ~/.routelet/.env
 routelet --no-env-file                 # 不加载环境变量文件
 routelet --dist dashboard/dist         # 指定前端构建目录
 ```
 
 配置、调用记录、统计、Provider 和模型统一通过 Dashboard 管理，统一启动命令为 `routelet`。重新执行 `uv tool install --force .` 可更新本地安装。
 
-更名前已安装的工具需要重新安装，并将启动脚本改为 `routelet`，Python 导入改为 `routelet`。首次运行默认写入 `logs/routelet.log`；已有配置中的显式日志路径继续生效，可在系统设置中修改。浏览器使用新的主题偏好键，首次打开会使用浅色主题。
+更名前已安装的工具需要重新安装，并将启动脚本改为 `routelet`，Python 导入改为 `routelet`。浏览器使用新的主题偏好键，首次打开会使用浅色主题。
 
-配置、数据库、日志和 `.env` 的默认路径均相对于启动目录，建议始终在固定目录启动。未解析的 `${ENV_VAR}` 不阻止页面启动，但实际请求会跳过对应 Provider。没有可用模型时，请先在页面完成配置。
+默认配置和运行数据统一放在用户主目录下的 `~/.routelet/`（Windows 为 `%USERPROFILE%\.routelet\`）。无论从哪个目录运行 `routelet` 或 `uv run routelet`，都使用同一份数据：
+
+```text
+~/.routelet/
+├── config.toml        # 路由配置，Dashboard 保存到这里
+├── .env               # 可选的密钥环境变量文件，需自行创建
+├── calls.db           # 调用记录与统计
+└── logs/
+    └── routelet.log   # 运行日志及同目录下的轮转文件
+```
+
+`-c`、`--db`、`--env-file` 可显式覆盖各自路径，支持 `~`；这些参数的相对路径仍以当前工作目录为基准，不会改变其他默认路径。`server.log_file` 的相对路径统一以 `~/.routelet/` 为基准，默认 `logs/routelet.log` 即 `~/.routelet/logs/routelet.log`；绝对路径和以 `~` 开头的路径按指定位置写入，空字符串禁用文件日志。启动输出会显示实际使用的配置和数据库绝对路径。
+
+升级旧版本时，先停止服务，把原启动目录中的 `config.toml`、`.env`（如有）、`calls.db` 和 `logs/` 复制到 `~/.routelet/`，再运行 `routelet`。旧目录不会被自动导入；若新目录已有数据，请先核对再合并。原配置中的相对日志路径会改为相对于新目录。未解析的 `${ENV_VAR}` 不阻止页面启动，但实际请求会跳过对应 Provider。没有可用模型时，请先在页面完成配置。
 
 未找到前端静态文件时会显示构建提示并退出，避免只启动一半服务。发布前先构建前端，再运行 `uv build`，生成包含页面资源的 wheel；可用 `uv tool install dist/routelet-0.1.0-py3-none-any.whl` 安装。`config.toml.example` 仍可作为手工配置参考，首次启动自动生成的是空配置。
 
@@ -153,10 +166,10 @@ SSE 支持流开头的 UTF-8 BOM，包括 BOM 字节跨数据块的情况；它�
 本版本的 `calls` 表新增四类价格快照字段，不兼容缺少这些字段的旧 `calls.db`，也不会执行自动迁移。启动时若检测到旧 schema，服务会列出缺失字段并提示手动重建；程序不会删除、覆盖或修改原数据库。请先停止服务并备份或重命名旧文件，例如：
 
 ```powershell
-Move-Item calls.db calls.db.pre-pricing.bak
+Move-Item -LiteralPath "$env:USERPROFILE\.routelet\calls.db" -Destination "$env:USERPROFILE\.routelet\calls.db.pre-pricing.bak"
 ```
 
-之后重新运行 `uv run routelet -c config.toml --db calls.db`，程序会创建完整的新数据库。需要保留的旧调用历史仍在备份文件中。
+之后重新运行 `routelet`，程序会在 `~/.routelet/` 创建完整的新数据库。若通过 `--db` 指定了其他路径，请备份该路径的文件并沿用相同参数启动。需要保留的旧调用历史仍在备份文件中。
 
 ## Dashboard
 

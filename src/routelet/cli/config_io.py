@@ -23,8 +23,8 @@ def load_startup_config(
 ) -> AppConfig:
     """Create an empty first-run config without overwriting existing files."""
     if not no_env_file and env_file:
-        load_dotenv(env_file)
-    path = Path(config_path)
+        load_dotenv(Path(env_file).expanduser())
+    path = Path(config_path).expanduser()
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         try:

@@ -144,7 +144,7 @@ function exportConfig() {
             ><input
               v-model="workspace.draft.server.log_file"
               placeholder="留空则只输出到控制台"
-            /><small>相对路径基于启动服务的工作目录。</small></label
+            /><small>相对路径基于 ~/.routelet/，留空则只输出到控制台。</small></label
           ><label class="field full"
             ><span>单个日志文件大小上限</span>
             <div class="input-unit">

@@ -19,7 +19,7 @@ Agent → Routelet (本地 FastAPI) → Provider A   (优先级 1)
 ``` text
 routelet/
 ├── pyproject.toml                  # 项目元数据 + 依赖
-├── config.toml                     # 路由配置 (用户编辑)
+├── config.toml.example             # 配置示例，运行配置默认在 ~/.routelet/config.toml
 ├── docs/
 │   └── design.md                   # 本文档
 ├── src/routelet/
@@ -27,6 +27,7 @@ routelet/
 │   ├── main.py                     # 入口: argparse + uvicorn
 │   ├── app.py                      # FastAPI 应用 + 路由处理器
 │   ├── config.py                   # TOML 加载 + ${ENV_VAR} 插值 + Pydantic 校验
+│   ├── paths.py                    # 用户数据目录与显式路径解析
 │   ├── routing.py                  # 核心: 优先级链 + 故障转移 + 熔断
 │   ├── circuit_breaker.py          # Per-provider 熔断器 (CLOSED/OPEN/HALF_OPEN)
 │   ├── recording.py                # 有界队列 + 后台调用记录 writer
@@ -386,7 +387,8 @@ data: {"type":"message_stop"}
 `routelet`、`python -m routelet.main` 与 `python -m routelet.cli` 均调用同一个启动入口；不再注册管理子命令或独立的 Dashboard 命令。`run` 返回整数退出码，进程入口 `main` 抛出 `SystemExit`。
 
 - `cli/app.py` 使用标准库 argparse 解析配置、数据库、监听地址、静态文件和浏览器选项。
-- `cli/config_io.py` 在首次运行时以排他写入方式创建空配置，不覆盖已有文件；加载 `.env`，校验配置，允许尚未解析的 Provider 密钥。
+- `paths.py` 统一解析 `~/.routelet/` 下的默认配置、数据库、环境变量和日志路径；显式 CLI 路径支持 `~`，相对 CLI 路径以工作目录为基准。日志相对路径始终基于 `~/.routelet/`，启动与热重载保持一致。
+- `cli/config_io.py` 在首次运行时以排他写入方式创建 `~/.routelet/config.toml` 空配置，不覆盖已有文件；默认加载 `~/.routelet/.env`，校验配置，允许尚未解析的 Provider 密钥。旧启动目录的数据需手工迁移，不会随工作目录变化自动读取。
 - `cli/server.py` 创建 Router 应用，在所有 API 路由之后挂载 Dashboard，使用单个 Uvicorn 服务监听同一端口。只有监听成功后才打开浏览器，`--no-browser` 可禁用；打开失败仅提示 URL，不中止服务。
 - `dashboard.py` 使用 StaticFiles 提供构建资源，为前端历史路由返回 `index.html`。未知 API 和缺失资源仍返回 404，不会返回 SPA 页面，也不会读取静态目录外的文件。
 
@@ -596,7 +598,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 ```bash
 # 1. 启动
-uv run routelet --config config.toml
+uv run routelet
 
 # 2. 健康检查
 curl http://127.0.0.1:9456/health

@@ -4,7 +4,6 @@ from collections.abc import Mapping, MutableMapping
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -24,6 +23,7 @@ from routelet.config import (
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_MAX_BYTES,
 )
+from routelet.paths import data_path
 
 # 命中即对值脱敏的敏感键名（小写精确匹配）。
 _SENSITIVE_KEYS = frozenset(
@@ -168,10 +168,11 @@ def setup_logging(
 
     输出双路：
     - stdout：彩色简洁单行（长字段截断、errors 折叠），便于终端实时浏览
-    - 本地文件（log_file，默认 logs/routelet.log，按大小轮转）：全量 JSON
+    - 本地文件（默认 ~/.routelet/logs/routelet.log，按大小轮转）：全量 JSON
 
     structlog / stdlib / uvicorn 日志经 ProcessorFormatter 统一走同一渲染管线；
-    时间戳 UTC ISO，敏感字段自动脱敏。log_file 为空字符串时只输出到 stdout。
+    时间戳 UTC ISO，敏感字段自动脱敏。相对日志路径基于 ~/.routelet；
+    log_file 为空字符串时只输出到 stdout。
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -204,7 +205,7 @@ def setup_logging(
         handlers.append(stdout_handler)
 
         if log_file:
-            path = Path(log_file)
+            path = data_path(log_file)
             if path.parent and not path.parent.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
             file_handler = RotatingFileHandler(
@@ -238,7 +239,7 @@ def setup_logging(
     structlog.get_logger("monitoring").info(
         "logging.configured",
         level=level,
-        log_file=log_file or None,
+        log_file=str(path) if log_file else None,
         stdout="brief",
         file="full_json" if log_file else None,
     )

@@ -31,7 +31,7 @@ bun test                              # 前端测试
 bun run build                         # vue-tsc 检查并构建静态资源
 ```
 
-构建后，在根目录运行 `uv run routelet` 同时启动 API 和面板，首次运行自动创建空配置；运行 `uv build` 打包 Python 分发文件及已构建的面板。
+构建后，在根目录运行 `uv run routelet` 同时启动 API 和面板，首次运行自动创建 `~/.routelet/config.toml` 空配置；数据库、`.env` 和日志默认也位于 `~/.routelet/`，与启动目录无关。运行 `uv build` 打包 Python 分发文件及已构建的面板。
 
 ## 代码风格与命名
 

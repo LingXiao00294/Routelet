@@ -48,6 +48,38 @@ def test_file_output_is_full_json(tmp_path):
     assert data["timestamp"].endswith("Z")  # UTC ISO
 
 
+def test_default_and_reloaded_relative_logs_use_shared_home(
+    routelet_home, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    monitoring.setup_logging()
+    structlog.get_logger("t").info("home.default")
+    _flush()
+    assert "home.default" in (routelet_home / "logs" / "routelet.log").read_text(
+        encoding="utf-8"
+    )
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monitoring.reconfigure_logging(log_file="logs/custom.log")
+    structlog.get_logger("t").info("home.reloaded")
+    _flush()
+    assert "home.reloaded" in (routelet_home / "logs" / "custom.log").read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / "logs").exists()
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_log_path_expands_tilde(routelet_home):
+    monitoring.setup_logging(log_file="~/.routelet/logs/expanded.log")
+    structlog.get_logger("t").info("home.expanded")
+    _flush()
+    assert "home.expanded" in (routelet_home / "logs" / "expanded.log").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_stdout_is_brief_not_json(tmp_path, capsys):
     monitoring.setup_logging("info", log_file=str(tmp_path / "app.log"))
     structlog.get_logger("t").info("biz.event", model="glm")

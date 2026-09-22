@@ -27,6 +27,7 @@ from routelet.api.metrics import create_metrics_router
 from routelet.config import AppConfig
 from routelet.db import CallStore
 from routelet.monitoring import reconfigure_logging
+from routelet.paths import resolve_path
 from routelet.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
 from routelet.providers.base import (
     NonRetryableError,
@@ -141,11 +142,12 @@ def _stream_error_type(error: Exception) -> str:
 def create_app(
     config: AppConfig,
     store: CallStore,
-    config_path: str = "config.toml",
+    config_path: str | None = None,
     *,
     call_recorder: CallRecorder | None = None,
 ) -> FastAPI:
     """Create the router application and its background call recorder."""
+    config_path = str(resolve_path(config_path, "config.toml"))
     http_client = httpx.AsyncClient(
         limits=httpx.Limits(max_keepalive_connections=20, max_connections=100),
         timeout=httpx.Timeout(300.0, connect=10.0),
