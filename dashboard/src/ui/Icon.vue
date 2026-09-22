@@ -4,7 +4,7 @@ const paths: Record<string, string> = {
   overview: "M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z",
   activity: "M2 12h4l3-8 6 16 3-8h4",
   routes:
-    "M5 4v12a4 4 0 0 0 4 4h10 M5 9h10a4 4 0 0 0 4-4V4 M16 17l3 3-3 3 M16 7l3-3 3 3",
+    "M6 12a2 2 0 1 0-4 0 2 2 0 0 0 4 0 M6 12h3 M9 12V9a3 3 0 0 1 3-3h9 M9 12v3a3 3 0 0 0 3 3h9 M18 3l3 3-3 3 M18 15l3 3-3 3",
   providers: "M4 3h16v6H4z M4 15h16v6H4z M8 6h.01 M8 18h.01 M12 9v6",
   lab: "M9 3h6 M10 3v6L4 19a1.4 1.4 0 0 0 1 2h14a1.4 1.4 0 0 0 1-2L14 9V3 M7 15h10",
   settings:
@@ -39,6 +39,7 @@ const paths: Record<string, string> = {
   link: "m9 15 6-6 M7 14l-2 2a3 3 0 0 0 4 4l4-4 M11 8l4-4a3 3 0 0 1 4 4l-2 2",
   book: "M12 5v16 M3 3c4-1 6 0 9 2 3-2 5-3 9-2v16c-4-1-6 0-9 2-3-2-5-3-9-2z",
   dots: "M5 12h.01 M12 12h.01 M19 12h.01",
+  grip: "M9 5h.01 M15 5h.01 M9 12h.01 M15 12h.01 M9 19h.01 M15 19h.01",
 };
 </script>
 <template>

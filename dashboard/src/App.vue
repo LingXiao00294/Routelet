@@ -97,11 +97,11 @@ async function discard() {
     <aside class="sidebar">
       <RouterLink to="/" class="brand" aria-label="Agent Router 首页"
         ><span class="brand-mark"
-          ><svg viewBox="0 0 32 32" fill="none" aria-hidden="true">
+          ><svg viewBox="0 0 48 48" fill="none" aria-hidden="true">
             <path
-              d="M7 23V9a3 3 0 0 1 3-3h12M7 16h13M18 2l5 4-5 4M16 12l5 4-5 4M7 23h15"
+              d="M7 9h8c5 0 6 15 13 15h12 M7 39h8c5 0 6-15 13-15 M33 17l8 7-8 7"
               stroke="currentColor"
-              stroke-width="2.8"
+              stroke-width="5.5"
               stroke-linecap="round"
               stroke-linejoin="round"
             /></svg></span

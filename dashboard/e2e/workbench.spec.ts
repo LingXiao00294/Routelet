@@ -191,6 +191,131 @@ test("route reorder and pin survive publication", async ({ page }) => {
   ).toBe("DeepSeek");
 });
 
+test("route dragging previews the destination, animates and persists the order", async ({
+  page,
+}) => {
+  const state = await installApi(page);
+  await page.goto("/routes");
+  await page.getByRole("button", { name: "切换深色模式" }).click();
+  await page
+    .locator(".route-card")
+    .first()
+    .getByRole("button", { name: "编排" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  const rows = dialog.locator(".route-editor-row");
+  const names = rows.locator(".route-editor-name strong");
+  const original = await names.allTextContents();
+  const handle = await rows.first().locator(".route-drag-handle").boundingBox();
+  const last = await rows.last().boundingBox();
+  if (!handle || !last) throw new Error("Missing drag geometry");
+  await page.mouse.move(
+    handle.x + handle.width / 2,
+    handle.y + handle.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 90, last.y + last.height - 8, { steps: 12 });
+  await expect(dialog.locator(".route-drop-indicator")).toHaveText(
+    "放到第 3 位",
+  );
+  await expect(dialog.locator(".route-drag-preview")).toContainText(
+    original[0],
+  );
+  await expect(names).toHaveText(original);
+  await page.screenshot({
+    path: "test-results/route-drag-preview.png",
+    fullPage: true,
+  });
+  await page.mouse.up();
+  await expect(dialog.locator(".route-sort-move").first()).toBeAttached();
+  await expect(names).toHaveText([original[1], original[2], original[0]]);
+  await expect(dialog.locator(".route-drag-preview")).toHaveCount(0);
+  await expect(rows.last()).toHaveClass(/just-moved/);
+  await expect(
+    rows.last().getByRole("button", { name: /^固定 / }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await dialog.getByRole("button", { name: "应用到草稿" }).click();
+  await page.getByRole("button", { name: "检查并发布" }).click();
+  await page.getByRole("button", { name: "确认发布" }).click();
+  await expect(page.locator(".draft-bar")).toHaveCount(0);
+  expect(
+    state.writes[0].models["coding-assistant"].models.map((ref) => ref.model),
+  ).toEqual([original[1], original[2], original[0]]);
+  expect(state.writes[0].models["coding-assistant"].pinned_model?.model).toBe(
+    original[0],
+  );
+});
+
+test("route dragging cancels safely and supports moving upward and keyboard", async ({
+  page,
+}) => {
+  await installApi(page);
+  await page.goto("/routes");
+  await page
+    .locator(".route-card")
+    .first()
+    .getByRole("button", { name: "编排" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  const rows = dialog.locator(".route-editor-row");
+  const names = rows.locator(".route-editor-name strong");
+  const original = await names.allTextContents();
+  const handle = await rows.last().locator(".route-drag-handle").boundingBox();
+  const first = await rows.first().boundingBox();
+  if (!handle || !first) throw new Error("Missing drag geometry");
+  const start = async () => {
+    await page.mouse.move(handle.x + 12, handle.y + 12);
+    await page.mouse.down();
+    await page.mouse.move(handle.x + 60, first.y + 5, { steps: 8 });
+  };
+  await start();
+  await expect(dialog.locator(".route-drop-indicator")).toHaveText(
+    "放到第 1 位",
+  );
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(dialog).toBeVisible();
+  await expect(names).toHaveText(original);
+  await expect(dialog.locator(".route-drag-preview")).toHaveCount(0);
+  await start();
+  await page.mouse.move(2, 2);
+  await page.mouse.up();
+  await expect(names).toHaveText(original);
+  await start();
+  await page.mouse.up();
+  await expect(names).toHaveText([original[2], original[0], original[1]]);
+  await rows.first().locator(".route-drag-handle").focus();
+  await page.keyboard.press("ArrowDown");
+  await expect(names).toHaveText([original[0], original[2], original[1]]);
+});
+
+test("route editor fits mobile and positions the select chevron inside the field", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installApi(page);
+  await page.goto("/routes");
+  await page
+    .locator(".route-card")
+    .first()
+    .getByRole("button", { name: "编排" })
+    .click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("选择候选模型").scrollIntoViewIfNeeded();
+  const select = await dialog.getByLabel("选择候选模型").boundingBox();
+  const icon = await dialog.locator(".candidate-select > svg").boundingBox();
+  if (!select || !icon) throw new Error("Missing select geometry");
+  expect(select.x + select.width - icon.x - icon.width).toBeCloseTo(14, 0);
+  expect(icon.y + icon.height / 2).toBeCloseTo(select.y + select.height / 2, 0);
+  expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(
+    true,
+  );
+  await page.screenshot({
+    path: "test-results/route-editor-mobile.png",
+    fullPage: true,
+  });
+});
+
 test("cascade deletion gives impact preview and remains a draft", async ({
   page,
 }) => {

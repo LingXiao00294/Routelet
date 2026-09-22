@@ -409,7 +409,13 @@ small {
 }
 .brand-mark {
   width: 31px;
+  flex-shrink: 0;
   color: #a5d9b5;
+}
+.brand-mark svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 .workspace-chip {
   display: flex;
@@ -1508,6 +1514,8 @@ kbd {
   border: 0;
   background: none;
   box-shadow: none;
+  /* The enclosing search field owns the focus indicator. */
+  outline: none;
   padding: 10px 0;
   font-size: 13px;
 }
@@ -1980,14 +1988,81 @@ kbd {
 .route-editor-list {
   border: 1px solid var(--line);
   border-radius: 8px;
-  overflow: hidden;
+  position: relative;
 }
 .route-editor-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 11px;
   padding: 14px;
   border-bottom: 1px solid var(--line);
+  transition:
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+.route-sort-move {
+  transition: transform 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.route-drag-handle {
+  flex-shrink: 0;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.route-drag-handle:active {
+  cursor: grabbing;
+}
+.route-editor-row.is-dragging {
+  background: var(--soft);
+}
+.route-editor-row.is-dragging > :not(.route-drop-indicator) {
+  opacity: 0.35;
+}
+.route-editor-row.just-moved {
+  background: var(--tint);
+  box-shadow: inset 3px 0 var(--accent);
+}
+.route-drop-indicator {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -2px;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 3px;
+  z-index: 2;
+  pointer-events: none;
+}
+.route-drop-indicator.after {
+  top: auto;
+  bottom: -2px;
+}
+.route-drop-indicator > span {
+  position: absolute;
+  right: 12px;
+  bottom: 5px;
+  padding: 3px 7px;
+  border: 1px solid var(--accent);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 11px;
+}
+.route-drag-preview {
+  position: fixed;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 16px 40px #08160d33;
+  opacity: 0.9;
+  pointer-events: none;
 }
 .route-editor-row:last-child {
   border-bottom: 0;
@@ -2046,9 +2121,24 @@ kbd {
   gap: 10px;
   margin: 14px 0;
 }
-.add-candidate select {
+.candidate-select {
+  position: relative;
   flex: 1;
+  min-width: 0;
+}
+.candidate-select select {
+  height: 100%;
+  appearance: none;
+  padding-right: 42px;
   font-size: 13px;
+}
+.candidate-select > svg {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  pointer-events: none;
 }
 .settings-layout {
   display: flex;
@@ -3148,10 +3238,16 @@ kbd {
     flex-wrap: wrap;
   }
   .route-editor-name {
-    min-width: calc(100% - 43px);
+    min-width: calc(100% - 74px);
   }
   .route-editor-row .pin-button {
-    margin-left: 32px;
+    margin-left: 60px;
+  }
+  .route-drag-preview .route-editor-name {
+    min-width: 0;
+  }
+  .route-drag-preview .badge {
+    display: none;
   }
   .order-buttons {
     margin-left: auto;
