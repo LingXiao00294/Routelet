@@ -487,6 +487,76 @@ test("all desktop pages load without runtime errors or horizontal overflow", asy
   expect(errors).toEqual([]);
 });
 
+test("cyberpunk palettes share typography and fit desktop and mobile pages", async ({
+  page,
+}) => {
+  await installApi(page);
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  for (const theme of ["light", "dark"]) {
+    await page.addInitScript(
+      (value) => localStorage.setItem("ar-theme", value),
+      theme,
+    );
+    for (const mobile of [false, true]) {
+      await page.setViewportSize(
+        mobile ? { width: 390, height: 844 } : { width: 1440, height: 1100 },
+      );
+      for (const path of [
+        "/",
+        "/calls",
+        "/routes",
+        "/providers",
+        "/playground",
+        "/settings",
+      ]) {
+        await page.goto(path);
+        await expect(
+          page.getByText("服务已连接", { exact: true }),
+        ).toBeVisible();
+        await page.evaluate(() => document.fonts.ready);
+        await expect(page.locator("html")).toHaveAttribute("data-theme", theme);
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= innerWidth,
+          ),
+        ).toBe(true);
+        expect(
+          await page
+            .locator("h1")
+            .evaluate((el) => getComputedStyle(el).fontFamily),
+        ).toContain("Oxanium");
+        if (path === "/") {
+          expect(
+            await page.evaluate(() =>
+              document.fonts.check('600 24px "Oxanium"'),
+            ),
+          ).toBe(true);
+          await page.screenshot({
+            path: `test-results/cyberpunk-${theme}-${mobile ? "mobile" : "desktop"}.png`,
+            fullPage: true,
+          });
+        }
+        if (!mobile && path === "/routes") {
+          await page
+            .locator(".route-card")
+            .first()
+            .getByRole("button", { name: "编排" })
+            .click();
+          await expect(page.getByRole("dialog")).toBeVisible();
+          await page.screenshot({
+            path: `test-results/cyberpunk-${theme}-editor.png`,
+            fullPage: true,
+          });
+          await page.keyboard.press("Escape");
+          await expect(page.getByRole("dialog")).toHaveCount(0);
+        }
+      }
+    }
+  }
+  expect(errors).toEqual([]);
+});
+
 test("stale calls cannot replace the latest filter result", async ({
   page,
 }) => {

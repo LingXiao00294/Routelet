@@ -515,7 +515,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 - `src/state/`：完整配置快照与内存草稿、监控批次、通知。配置不写入 localStorage，只有主题偏好保存在浏览器。
 - `src/services/`：支持超时与取消的 HTTP 客户端、按完整事件解码的 SSE 缓冲器。
 - `src/ui/`：原生 dialog 弹窗、调用检查器、配置编辑器、命令搜索、SVG 趋势图和通用状态组件。
-- `src/styles/workbench.css`：暖白 / 深色主题、布局、交互反馈、移动适配与减少动画支持。
+- `src/styles/workbench.css`：浅色 / 深色语义色板、布局、交互反馈、移动适配与减少动画支持；`cyberpunk.css`：两套主题共享的赛博朋克字体、切角、网格和控件外观。本地 `public/fonts/` 包含 Oxanium 可变字体及 OFL 许可，无外部字体请求。
 
 总览区分累计指标和局部趋势窗口；SVG 图表通过 ResizeObserver 保持窄屏标签可读，并提供可展开的每日数据表。模型身份在内部始终使用独立 Provider / model 字段，名称中的斜杠不参与解析。调用记录查询使用 URL 筛选、取消与请求代次检查，旧请求不能修改新的筛选结果或页码。
 

@@ -26,6 +26,9 @@ watch(
   dark,
   (value) => {
     document.documentElement.dataset.theme = value ? "dark" : "light";
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", value ? "#0b1120" : "#e4eafb");
     try {
       localStorage.setItem("ar-theme", value ? "dark" : "light");
     } catch {

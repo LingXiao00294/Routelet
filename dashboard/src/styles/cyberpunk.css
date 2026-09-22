@@ -1,0 +1,492 @@
+/* Shared geometry and typography; both palettes live in workbench.css. */
+@font-face {
+  font-family: "Oxanium";
+  src: url("/fonts/oxanium-variable.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+::selection {
+  background: var(--pink);
+  color: var(--action-ink);
+}
+
+.main-frame {
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+h1,
+h2,
+h3,
+.brand,
+.eyebrow,
+.stat-value,
+.stat-number,
+.health-orbit strong,
+.route-number,
+.node-priority,
+.subtle-label,
+.provider-avatar,
+.avatar,
+.local-label {
+  font-family: var(--font-display);
+}
+h1 {
+  font-weight: 750;
+  letter-spacing: -0.5px;
+}
+h2,
+h3 {
+  font-weight: 650;
+}
+.eyebrow {
+  color: var(--accent);
+  letter-spacing: 2px;
+}
+.page-heading .eyebrow::before {
+  content: "// ";
+  color: var(--pink);
+}
+.page-heading {
+  padding-left: 16px;
+  border-left: 3px solid var(--cyan);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--cyan) 6%, transparent),
+    transparent 65%
+  );
+}
+.heading-dot {
+  color: var(--pink);
+  text-shadow: 2px 0 var(--cyan);
+}
+
+.sidebar {
+  border-right: 1px solid var(--sidebar-line);
+  background-image: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--pink) 4%, transparent),
+    transparent 40%
+  );
+}
+.sidebar::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    var(--cyan) 0 52%,
+    var(--pink) 52% 80%,
+    var(--yellow) 80%
+  );
+  pointer-events: none;
+}
+.brand {
+  font-size: 21px;
+  font-weight: 750;
+  letter-spacing: -1.1px;
+}
+.brand-light {
+  font-weight: 400;
+}
+.brand-mark {
+  color: var(--accent);
+  filter: drop-shadow(
+    2px 1px 0 color-mix(in srgb, var(--pink) 40%, transparent)
+  );
+}
+.brand small {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+}
+.workspace-chip,
+.workspace-symbol,
+.endpoint-card,
+.avatar {
+  border-radius: 2px;
+}
+.workspace-chip {
+  border-style: dashed;
+}
+.local-label {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.nav-heading {
+  font-family: var(--font-display);
+  letter-spacing: 1px;
+}
+.nav-item {
+  border-radius: 2px;
+  border: 1px solid transparent;
+}
+.nav-item.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--sidebar-line));
+  box-shadow: inset 3px 0 var(--cyan);
+  background-image: linear-gradient(
+    115deg,
+    transparent 70%,
+    color-mix(in srgb, var(--cyan) 8%, transparent)
+  );
+}
+.nav-item.active::after {
+  content: "";
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 9px;
+  height: 9px;
+  background: linear-gradient(
+    45deg,
+    transparent 45%,
+    var(--accent) 46% 53%,
+    var(--sidebar) 54%
+  );
+  pointer-events: none;
+}
+.nav-active-dot {
+  border-radius: 0;
+  transform: rotate(45deg);
+  background: var(--pink);
+}
+.nav-count {
+  border-radius: 0;
+  color: var(--accent);
+}
+.endpoint-card {
+  border-left: 2px solid var(--pink);
+}
+.theme-button {
+  border: 1px solid var(--sidebar-line);
+  border-radius: 2px;
+}
+.topbar {
+  border-bottom-color: var(--border);
+  background-image: linear-gradient(
+    90deg,
+    var(--cyan) 0 18%,
+    var(--pink) 18% 24%,
+    transparent 24%
+  );
+  background-size: 100% 2px;
+  background-repeat: no-repeat;
+  background-position: left bottom;
+}
+.connection-status .dot {
+  box-shadow: 0 0 7px color-mix(in srgb, currentColor 40%, transparent);
+}
+
+.panel,
+.stat-card,
+.routing-strategy,
+.onboarding-banner,
+.provider-card,
+.modal,
+.draft-bar,
+.toast {
+  border-radius: 3px;
+  border-color: var(--border);
+}
+.panel,
+.stat-card,
+.routing-strategy {
+  position: relative;
+}
+.panel::before,
+.stat-card::before,
+.routing-strategy::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  background: linear-gradient(
+    45deg,
+    transparent 44%,
+    var(--border) 45% 52%,
+    var(--bg) 53%
+  );
+  pointer-events: none;
+  z-index: 1;
+}
+.panel-heading {
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 12px;
+}
+.panel-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+.panel-heading h2::before {
+  content: "";
+  width: 3px;
+  height: 12px;
+  background: var(--cyan);
+  flex-shrink: 0;
+}
+.panel-heading .subtle-label {
+  margin-left: 0;
+  color: var(--purple);
+}
+.stat-card {
+  --stat-tone: var(--cyan);
+  border-top: 3px solid var(--stat-tone);
+}
+.stat-card:nth-child(2) {
+  --stat-tone: var(--blue);
+}
+.stat-card:nth-child(3) {
+  --stat-tone: var(--yellow);
+}
+.stat-card:nth-child(4) {
+  --stat-tone: var(--pink);
+}
+.stat-card::after {
+  content: "";
+  position: absolute;
+  right: 18px;
+  bottom: 52px;
+  width: 32px;
+  height: 5px;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--stat-tone) 0 2px,
+    transparent 2px 5px
+  );
+  opacity: 0.45;
+  pointer-events: none;
+}
+.stat-value {
+  font-weight: 650;
+  letter-spacing: -0.8px;
+}
+.stat-number {
+  color: var(--sub);
+}
+.stat-icon,
+.strategy-icon,
+.provider-avatar {
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+.health-orbit {
+  background: repeating-conic-gradient(
+    from 0deg,
+    var(--line) 0deg 1deg,
+    transparent 1deg 15deg
+  );
+  border-radius: 50%;
+}
+.health-orbit > div {
+  background: var(--surface);
+  border-radius: 50%;
+  inset: 19px;
+}
+.health-orbit strong {
+  color: var(--accent);
+}
+.health-orbit svg {
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
+}
+.traffic-chart > path[fill="none"] {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--cyan) 20%, transparent));
+}
+.chart-summary {
+  margin-top: 4px;
+}
+
+.button,
+.icon-button,
+input,
+textarea,
+select,
+.search-input,
+.segmented,
+.segmented button,
+.badge,
+kbd,
+.step-index,
+.pin-button,
+.route-editor-list,
+.route-drag-preview,
+.chain-node,
+.chain-entry,
+.code-block,
+.filter-field,
+.tabs button,
+.command-input {
+  border-radius: 2px;
+}
+.button {
+  font-weight: 600;
+  box-shadow: 2px 2px 0 color-mix(in srgb, var(--border) 25%, transparent);
+}
+.button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.button.primary,
+:root[data-theme="dark"] .button.primary {
+  background: var(--cyan);
+  border-color: var(--accent);
+  color: var(--action-ink);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.button.primary:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--cyan) 75%, var(--surface));
+  border-color: var(--accent);
+}
+.button.ghost {
+  box-shadow: none;
+}
+.segmented button.active {
+  color: var(--accent);
+  background: var(--tint);
+  box-shadow: inset 0 -2px var(--accent);
+}
+.switch-track {
+  border-radius: 2px;
+  border: 1px solid var(--border);
+  height: 26px;
+  width: 46px;
+}
+.switch-track > span {
+  border-radius: 0;
+  background: var(--surface);
+}
+.routing-toggle[aria-checked="true"] .switch-track {
+  background: var(--cyan);
+}
+.routing-toggle[aria-checked="true"] .switch-track > span {
+  background: var(--action-ink);
+}
+.data-table thead {
+  background: var(--soft);
+}
+.data-table th {
+  color: var(--sub);
+  letter-spacing: 0.5px;
+}
+.data-table tbody tr:hover {
+  background: color-mix(in srgb, var(--cyan) 5%, var(--surface));
+}
+.route-card-heading {
+  background: linear-gradient(90deg, var(--soft), var(--surface));
+}
+.route-number {
+  color: var(--purple);
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+.route-chain {
+  background-image:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
+.chain-node.pinned {
+  border-color: var(--accent);
+  box-shadow: inset 0 3px var(--cyan);
+}
+.node-pin {
+  color: var(--accent);
+}
+.chain-end {
+  border-radius: 2px;
+  color: var(--accent);
+}
+.route-editor-row.just-moved {
+  box-shadow: inset 3px 0 var(--cyan);
+}
+.route-drag-preview {
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--accent) 25%, transparent);
+}
+.onboarding-banner {
+  background: linear-gradient(
+    115deg,
+    var(--tint),
+    var(--surface) 55%,
+    var(--purple-bg)
+  );
+}
+.art-router {
+  color: var(--action-ink);
+  background: var(--cyan);
+  border-radius: 4px;
+}
+.art-client,
+.art-models > svg {
+  border-radius: 2px;
+}
+.modal {
+  box-shadow:
+    6px 6px 0 color-mix(in srgb, var(--cyan) 25%, transparent),
+    0 28px 90px #02081760;
+}
+.modal-head {
+  border-top: 3px solid var(--cyan);
+  background: linear-gradient(110deg, var(--tint), var(--surface) 65%);
+}
+.modal-head .eyebrow {
+  color: var(--purple);
+}
+.modal-foot {
+  background: var(--soft);
+}
+.draft-bar {
+  border-top: 2px solid var(--pink);
+  box-shadow: 4px 4px 0 color-mix(in srgb, var(--pink) 20%, transparent);
+}
+.command-input {
+  border-bottom-color: var(--accent);
+}
+.command-item.selected {
+  background: var(--tint);
+  box-shadow: inset 3px 0 var(--cyan);
+}
+.toast {
+  border-left: 3px solid var(--accent);
+}
+.page-footer {
+  font-family: var(--font-display);
+  letter-spacing: 0.5px;
+}
+
+@media (max-width: 1200px) {
+  .brand {
+    font-size: 19px;
+  }
+}
+@media (max-width: 800px) {
+  .brand {
+    font-size: 21px;
+  }
+}
+@media (max-width: 600px) {
+  .page-heading {
+    padding-left: 10px;
+  }
+  .stat-card::after {
+    display: none;
+  }
+}
+@media (forced-colors: active) {
+  .nav-item.active,
+  .button.primary {
+    border: 2px solid Highlight;
+  }
+  .search-input:focus-within {
+    outline: 2px solid Highlight;
+  }
+}
