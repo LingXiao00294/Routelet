@@ -43,12 +43,6 @@ Python 使用四空格缩进、类型注解；模块和函数采用 `snake_case`
 
 修复缺陷时添加对应回归测试，覆盖相关失败、流式或并发路径。可用 `uv run pytest tests/test_routing.py -v` 定向验证。当前未设置覆盖率门槛；提交前运行受影响范围检查，PR 应通过 `.github/workflows/ci.yml` 的全部检查。
 
-## 提交与 Pull Request
-
-沿用历史中的 Conventional Commits，例如 `fix(router): reroute stale config snapshots`；每次提交聚焦一个改动。不要直接在 `main` 或 `master` 开发，使用语义明确的工作分支，例如 `codex/fix-routing`。默认不创建提交；提交仅包含当前任务变更，每次 push 前须取得用户明确许可。
-
-PR 说明问题、行为变化和验证结果，关联相关 issue；界面改动附截图。用户可见的 API、命令或配置变化须同步更新 `README.md` 和相关示例。
-
 ## 配置与协作
 
 使用中文沟通，代码和日志可保留原文。不要提交 `.env`、`config.toml`、`calls.db` 或运行日志；调用记录可能包含敏感正文。服务默认绑定回环地址，不要未经评估扩大访问范围。交付时简述变更、检查结果、文档情况、分支与提交状态及遗留问题。
