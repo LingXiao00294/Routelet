@@ -1,10 +1,14 @@
-"""快速查看调用记录."""
+"""快速查看调用记录，默认读取 ~/.routelet/calls.db。"""
 
 import sqlite3
 import sys
 
-db_path = sys.argv[1] if len(sys.argv) > 1 else "calls.db"
-conn = sqlite3.connect(db_path)
+from routelet.paths import resolve_path
+
+db_path = resolve_path(sys.argv[1] if len(sys.argv) > 1 else None, "calls.db")
+if not db_path.is_file():
+    raise SystemExit(f"数据库文件不存在: {db_path}")
+conn = sqlite3.connect(db_path.as_uri() + "?mode=ro", uri=True)
 conn.row_factory = sqlite3.Row
 
 rows = conn.execute(

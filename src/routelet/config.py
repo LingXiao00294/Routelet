@@ -267,7 +267,7 @@ class ServerConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 9456
     log_level: Literal["debug", "info", "warning", "error"] = "info"
-    # 运行日志本地文件（相对 cwd）；为空则只输出到 stdout。
+    # 相对日志路径基于 ~/.routelet；为空则只输出到 stdout。
     log_file: str = DEFAULT_LOG_FILE
     log_max_bytes: int = DEFAULT_LOG_MAX_BYTES
     log_backup_count: int = DEFAULT_LOG_BACKUP_COUNT
