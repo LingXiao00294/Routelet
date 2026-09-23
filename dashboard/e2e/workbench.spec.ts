@@ -713,12 +713,17 @@ test("circuit reset acts on runtime only after confirmation", async ({
   await page.goto("/providers");
   await expect(page.locator(".circuit-alert")).toContainText("熔断中");
   await page
-    .locator(".circuit-alert")
-    .getByRole("button", { name: "重置", exact: true })
+    .getByRole("button", { name: "重置 Provider 保护状态 ProviderA" })
     .click();
   expect(resets).toBe(0);
   await page.getByRole("button", { name: "确认重置", exact: true }).click();
   await expect(page.locator(".circuit-alert")).toHaveCount(0);
   expect(resets).toBe(1);
+  await page
+    .getByRole("button", { name: "重置 Provider 保护状态 ProviderA" })
+    .click();
+  expect(resets).toBe(1);
+  await page.getByRole("button", { name: "确认重置", exact: true }).click();
+  expect(resets).toBe(2);
   await expect(page.locator(".draft-bar")).toHaveCount(0);
 });
