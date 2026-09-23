@@ -52,6 +52,8 @@ Routelet 不校验客户端传入的 token，Dashboard 还能读取调用详情�
 
 运行日志默认写入 `~/.routelet/logs/routelet.log`，按大小轮转。日志级别、文件大小与保留数量见 [Server 字段](configuration.md#server-字段)。排查一次请求时可用 `request_id` 关联请求、Provider 尝试和后台记录写入日志。
 
+在仓库根目录执行 `uv run python scripts/query_logs.py` 可快速查看最近 20 条调用，默认只读打开 `~/.routelet/calls.db`。需要查询自定义数据库时，传入路径参数，例如 `uv run python scripts/query_logs.py ./my-calls.db`；显式相对路径以当前工作目录为基准。数据库不存在时脚本报错，不创建空文件。
+
 调用记录属于尽力而为的观测数据，请求响应不等待 SQLite 提交。请求与非流式响应正文各自最多保存 256 KiB 的有效 JSON，超限内容保存为带 `_truncated`、原始字节数和文本预览的截断信封。
 
 队列已满、正文序列化失败、SQLite 写入失败或关闭时未能排空队列，可能导致调用记录缺失，但不会把已经成功的模型响应改成失败。相关日志包括 `call_record.dropped`、`call_record.serialization_failed`、`call_record.failed`、`call_record.shutdown_timeout` 和 `call_record.cancelled`；后台失败 / 取消日志保留提交时的 `request_id`。因此，`calls.db` 不应直接作为严格计费或审计账本。
