@@ -974,6 +974,7 @@ class TestMessages:
     ):
         """A failed response render must not enqueue a success first."""
         app_config.router.mode = "failover"
+        app_config.models["test-router"].providers[0].input_price_per_million = 2.0
         transport = httpx.MockTransport(
             lambda request: httpx.Response(
                 200,
@@ -997,6 +998,12 @@ class TestMessages:
         assert call["status"] == "error"
         assert call["error_type"] == "ValueError"
         assert call["attempt"] == 1
+        assert call["provider_name"] == "anthropic"
+        assert call["provider_model"] == "claude-haiku-4-5-20251001"
+        assert call["provider_url"] == "https://api.anthropic.com"
+        assert call["input_tokens"] == 1
+        assert call["input_price_per_million"] == 2.0
+        assert call["cost_usd"] == pytest.approx(0.000002)
 
     @pytest.mark.parametrize(
         ("content", "message"),

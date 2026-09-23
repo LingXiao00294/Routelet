@@ -302,6 +302,7 @@ def create_app(
         # routing 层会 fallback 到新 uuid 而与 http.request 日志断链。
         request_id = get_contextvars().get("request_id")
         engine: Router = request.app.state.router_engine
+        result: dict[str, Any] | None = None
 
         try:
             if is_stream:
@@ -514,14 +515,27 @@ def create_app(
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
+            usage = _validated_usage(result.get("usage")) if result is not None else {}
             recorder.submit(
                 virtual_model=virtual_model,
                 status="error",
+                provider_name=outcome.get("provider_name"),
+                provider_type=outcome.get("provider_type"),
+                provider_model=outcome.get("provider_model"),
+                provider_url=outcome.get("provider_url"),
                 error_type=type(e).__name__,
                 error_message=str(e),
                 attempt=outcome.get("attempt", 0),
                 latency_ms=latency_ms,
                 request_body=body,
+                input_tokens=usage.get("input_tokens"),
+                output_tokens=usage.get("output_tokens"),
+                cache_read_tokens=usage.get("cache_read_input_tokens"),
+                cache_write_tokens=usage.get("cache_creation_input_tokens"),
+                **_price_snapshot_kwargs(outcome),
+                cost_usd=_calculate_cost_usd(usage, outcome)
+                if result is not None
+                else None,
                 failover_details=_failover_details(outcome),
             )
             logger.error(
