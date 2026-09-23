@@ -25,7 +25,7 @@ from structlog.contextvars import (
 from routelet.api.config import RuntimeReloadError, create_config_router
 from routelet.api.metrics import create_metrics_router
 from routelet.config import AppConfig
-from routelet.db import CallStore
+from routelet.db import CallRecordPayload, CallStore
 from routelet.monitoring import reconfigure_logging
 from routelet.paths import resolve_path
 from routelet.providers.anthropic_compat import FORWARDED_ANTHROPIC_HEADERS_KEY
@@ -153,8 +153,64 @@ def _record_error_type(error: Exception) -> str:
 def _stream_error_type(error: Exception) -> str:
     """Return the Anthropic-compatible error type emitted in an SSE stream."""
     if isinstance(error, NoProviderAvailableError):
-        return "overloaded_error" if error.kind == "capacity" else "rate_limit_error"
+        return _record_error_type(error)
     return "api_error"
+
+
+def _submit_call_record(
+    recorder: CallRecorder,
+    *,
+    outcome: Mapping[str, Any],
+    virtual_model: str,
+    request_body: dict[str, Any],
+    start_time: float,
+    status: str,
+    error_type: str | None = None,
+    error_message: str | None = None,
+    response_body: dict[str, Any] | None = None,
+    usage: Mapping[str, Any] | None = None,
+    include_provider: bool = False,
+    normalize_failover: bool = False,
+    failover_errors: list[dict[str, Any]] | None = None,
+) -> None:
+    """Submit a call with one shared set of routing and accounting fields."""
+    record: CallRecordPayload = {
+        "virtual_model": virtual_model,
+        "status": status,
+        "attempt": outcome.get("attempt", 0),
+        "latency_ms": int((time.time() - start_time) * 1000),
+        "request_body": request_body,
+        "failover_details": (
+            _failover_details(outcome, failover_errors)
+            if normalize_failover
+            else outcome.get("_failures")
+        ),
+    }
+    if include_provider:
+        record["provider_name"] = outcome.get("provider_name")
+        record["provider_type"] = outcome.get("provider_type")
+        record["provider_model"] = outcome.get("provider_model")
+        record["provider_url"] = outcome.get("provider_url")
+        pricing = _price_snapshot_kwargs(outcome)
+        record["input_price_per_million"] = pricing["input_price_per_million"]
+        record["output_price_per_million"] = pricing["output_price_per_million"]
+        record["cache_read_price_per_million"] = pricing["cache_read_price_per_million"]
+        record["cache_write_price_per_million"] = pricing[
+            "cache_write_price_per_million"
+        ]
+    if error_type is not None:
+        record["error_type"] = error_type
+    if error_message is not None:
+        record["error_message"] = error_message
+    if response_body is not None:
+        record["response_body"] = response_body
+    if usage is not None:
+        record["input_tokens"] = usage.get("input_tokens")
+        record["output_tokens"] = usage.get("output_tokens")
+        record["cache_read_tokens"] = usage.get("cache_read_input_tokens")
+        record["cache_write_tokens"] = usage.get("cache_creation_input_tokens")
+        record["cost_usd"] = _calculate_cost_usd(usage, outcome)
+    recorder.submit(**record)
 
 
 def create_app(
@@ -343,12 +399,12 @@ def create_app(
                     raise
                 except NoProviderAvailableError as e:
                     await _close_prefetched_stream(stream_agen, None)
-                    return await _no_provider_response(
+                    return _routing_failure_response(
                         e, recorder, virtual_model, body, start_time, outcome=outcome
                     )
                 except AllProvidersFailedError as e:
                     await _close_prefetched_stream(stream_agen, None)
-                    return await _all_failed_response(
+                    return _routing_failure_response(
                         e, recorder, virtual_model, body, start_time, outcome=outcome
                     )
                 except UnknownModelError:
@@ -435,40 +491,30 @@ def create_app(
                 if not isinstance(result, Mapping):
                     raise ValueError("Provider 响应必须是 JSON 对象")
                 response = JSONResponse(result)
-                latency_ms = int((time.time() - start_time) * 1000)
                 usage = _validated_usage(result.get("usage"))
-                recorder.submit(
+                _submit_call_record(
+                    recorder,
+                    outcome=outcome,
                     virtual_model=virtual_model,
-                    status="success",
-                    provider_name=outcome.get("provider_name"),
-                    provider_type=outcome.get("provider_type"),
-                    provider_model=outcome.get("provider_model"),
-                    provider_url=outcome.get("provider_url"),
-                    attempt=outcome.get("attempt", 0),
-                    latency_ms=latency_ms,
                     request_body=body,
+                    start_time=start_time,
+                    status="success",
                     response_body=result,
-                    input_tokens=usage.get("input_tokens"),
-                    output_tokens=usage.get("output_tokens"),
-                    cache_read_tokens=usage.get("cache_read_input_tokens"),
-                    cache_write_tokens=usage.get("cache_creation_input_tokens"),
-                    **_price_snapshot_kwargs(outcome),
-                    cost_usd=_calculate_cost_usd(usage, outcome),
-                    failover_details=outcome.get("_failures"),
+                    usage=usage,
+                    include_provider=True,
                 )
                 return response
 
         except UnknownModelError as e:
-            latency_ms = int((time.time() - start_time) * 1000)
-            recorder.submit(
+            _submit_call_record(
+                recorder,
+                outcome=outcome,
                 virtual_model=virtual_model,
+                request_body=body,
+                start_time=start_time,
                 status="error",
                 error_type="unknown_model",
                 error_message=str(e),
-                attempt=outcome.get("attempt", 0),
-                latency_ms=latency_ms,
-                request_body=body,
-                failover_details=outcome.get("_failures"),
             )
             return JSONResponse(
                 {
@@ -481,41 +527,41 @@ def create_app(
             )
 
         except NoProviderAvailableError as e:
-            return await _no_provider_response(
+            return _routing_failure_response(
                 e, recorder, virtual_model, body, start_time, outcome=outcome
             )
 
         except AllProvidersFailedError as e:
-            return await _all_failed_response(
+            return _routing_failure_response(
                 e, recorder, virtual_model, body, start_time, outcome=outcome
             )
 
         except UpstreamHTTPError as e:
-            recorder.submit(
+            _submit_call_record(
+                recorder,
+                outcome=outcome,
                 virtual_model=virtual_model,
+                request_body=body,
+                start_time=start_time,
                 status="error",
                 error_type="upstream_http_error",
                 error_message=str(e),
-                attempt=outcome.get("attempt", 0),
-                latency_ms=int((time.time() - start_time) * 1000),
-                request_body=body,
-                failover_details=outcome.get("_failures"),
             )
             return _upstream_error_response(e)
 
         except NonRetryableError as e:
-            latency_ms = int((time.time() - start_time) * 1000)
             status_code = e.status_code or 502
             error_type = "invalid_request_error" if status_code < 500 else "api_error"
-            recorder.submit(
+            _submit_call_record(
+                recorder,
+                outcome=outcome,
                 virtual_model=virtual_model,
+                request_body=body,
+                start_time=start_time,
                 status="error",
                 error_type=error_type,
                 error_message=str(e),
-                attempt=outcome.get("attempt", 0),
-                latency_ms=latency_ms,
-                request_body=body,
-                failover_details=_failover_details(outcome),
+                normalize_failover=True,
             )
             logger.warning(
                 "request.non_retryable_error",
@@ -530,33 +576,23 @@ def create_app(
             )
 
         except Exception as e:
-            latency_ms = int((time.time() - start_time) * 1000)
             usage = (
                 _validated_usage(result.get("usage"))
                 if isinstance(result, Mapping)
                 else {}
             )
-            recorder.submit(
+            _submit_call_record(
+                recorder,
+                outcome=outcome,
                 virtual_model=virtual_model,
+                request_body=body,
+                start_time=start_time,
                 status="error",
-                provider_name=outcome.get("provider_name"),
-                provider_type=outcome.get("provider_type"),
-                provider_model=outcome.get("provider_model"),
-                provider_url=outcome.get("provider_url"),
                 error_type=type(e).__name__,
                 error_message=str(e),
-                attempt=outcome.get("attempt", 0),
-                latency_ms=latency_ms,
-                request_body=body,
-                input_tokens=usage.get("input_tokens"),
-                output_tokens=usage.get("output_tokens"),
-                cache_read_tokens=usage.get("cache_read_input_tokens"),
-                cache_write_tokens=usage.get("cache_creation_input_tokens"),
-                **_price_snapshot_kwargs(outcome),
-                cost_usd=_calculate_cost_usd(usage, outcome)
-                if result is not no_result
-                else None,
-                failover_details=_failover_details(outcome),
+                usage=usage if result is not no_result else None,
+                include_provider=True,
+                normalize_failover=True,
             )
             logger.error(
                 "request.error",
@@ -800,8 +836,8 @@ async def _close_prefetched_stream(
         await stream_agen.aclose()
 
 
-async def _no_provider_response(
-    e: NoProviderAvailableError,
+def _routing_failure_response(
+    error: NoProviderAvailableError | AllProvidersFailedError,
     recorder: CallRecorder,
     virtual_model: str,
     body: dict,
@@ -809,66 +845,38 @@ async def _no_provider_response(
     *,
     outcome: Mapping[str, Any],
 ) -> JSONResponse:
-    """Record unavailability using the accumulated count of upstream calls."""
-    latency_ms = int((time.time() - start_time) * 1000)
-    failover = _failover_details(outcome, e.errors)
-    status_code = 503 if e.kind == "capacity" else 429
-    error_type = _record_error_type(e)
-    recorder.submit(
+    """Record routing exhaustion and return its HTTP error envelope."""
+    record_error_type = _record_error_type(error)
+    _submit_call_record(
+        recorder,
+        outcome=outcome,
         virtual_model=virtual_model,
-        status="error",
-        attempt=outcome.get("attempt", 0),
-        error_type=error_type,
-        error_message=str(e),
-        latency_ms=latency_ms,
         request_body=body,
-        failover_details=failover,
+        start_time=start_time,
+        status="error",
+        error_type=record_error_type,
+        error_message=str(error),
+        normalize_failover=True,
+        failover_errors=error.errors,
     )
-    headers = {}
-    if e.retry_after is not None and e.retry_after > 0:
-        headers["Retry-After"] = str(max(1, math.ceil(e.retry_after)))
+    headers: dict[str, str] = {}
+    if isinstance(error, NoProviderAvailableError):
+        status_code = 503 if error.kind == "capacity" else 429
+        response_error_type = record_error_type
+        if error.retry_after is not None and error.retry_after > 0:
+            headers["Retry-After"] = str(max(1, math.ceil(error.retry_after)))
+    else:
+        status_code = 502
+        response_error_type = "api_error"
     return JSONResponse(
         {
             "error": {
-                "type": error_type,
-                "message": str(e),
+                "type": response_error_type,
+                "message": str(error),
             }
         },
         status_code=status_code,
         headers=headers,
-    )
-
-
-async def _all_failed_response(
-    e: AllProvidersFailedError,
-    recorder: CallRecorder,
-    virtual_model: str,
-    body: dict,
-    start_time: float,
-    *,
-    outcome: Mapping[str, Any],
-) -> JSONResponse:
-    """Record exhausted routing without counting skipped providers as calls."""
-    latency_ms = int((time.time() - start_time) * 1000)
-    failover = _failover_details(outcome, e.errors)
-    recorder.submit(
-        virtual_model=virtual_model,
-        status="error",
-        attempt=outcome.get("attempt", 0),
-        error_type=_record_error_type(e),
-        error_message=str(e),
-        latency_ms=latency_ms,
-        request_body=body,
-        failover_details=failover,
-    )
-    return JSONResponse(
-        {
-            "error": {
-                "type": "api_error",
-                "message": str(e),
-            }
-        },
-        status_code=502,
     )
 
 
@@ -952,27 +960,18 @@ def _record_cancelled_stream(
     it afterwards. Restore the request context temporarily for callbacks that
     run after request middleware has already unbound it.
     """
-    usage = usage if usage is not None else {}
     with bound_contextvars(request_id=request_id):
-        recorder.submit(
+        _submit_call_record(
+            recorder,
+            outcome=outcome,
             virtual_model=virtual_model,
+            request_body=request_body,
+            start_time=start_time,
             status="error",
-            provider_name=outcome.get("provider_name"),
-            provider_type=outcome.get("provider_type"),
-            provider_model=outcome.get("provider_model"),
-            provider_url=outcome.get("provider_url"),
-            attempt=outcome.get("attempt", 0),
             error_type="client_cancelled",
             error_message="客户端在流完成前断开连接",
-            latency_ms=int((time.time() - start_time) * 1000),
-            request_body=request_body,
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
-            cache_read_tokens=usage.get("cache_read_input_tokens"),
-            cache_write_tokens=usage.get("cache_creation_input_tokens"),
-            **_price_snapshot_kwargs(outcome),
-            cost_usd=_calculate_cost_usd(usage, outcome),
-            failover_details=outcome.get("_failures"),
+            usage=usage if usage is not None else {},
+            include_provider=True,
         )
 
 
@@ -1001,54 +1000,37 @@ async def _stream_wrapper(
             yield chunk
 
         # 流成功完成
-        latency_ms = int((time.time() - start_time) * 1000)
-        recorder.submit(
+        _submit_call_record(
+            recorder,
+            outcome=outcome,
             virtual_model=virtual_model,
-            status="success",
-            provider_name=outcome.get("provider_name"),
-            provider_type=outcome.get("provider_type"),
-            provider_model=outcome.get("provider_model"),
-            provider_url=outcome.get("provider_url"),
-            attempt=outcome.get("attempt", 0),
-            latency_ms=latency_ms,
             request_body=request_body,
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
-            cache_read_tokens=usage.get("cache_read_input_tokens"),
-            cache_write_tokens=usage.get("cache_creation_input_tokens"),
-            **_price_snapshot_kwargs(outcome),
-            cost_usd=_calculate_cost_usd(usage, outcome),
-            failover_details=outcome.get("_failures"),
+            start_time=start_time,
+            status="success",
+            usage=usage,
+            include_provider=True,
         )
         recorded = True
     except Exception as e:
-        latency_ms = int((time.time() - start_time) * 1000)
         errors = (
             e.errors
             if isinstance(e, (AllProvidersFailedError, NoProviderAvailableError))
             else None
         )
-        failover = _failover_details(outcome, errors)
         record_error_type = _record_error_type(e)
-        recorder.submit(
+        _submit_call_record(
+            recorder,
+            outcome=outcome,
             virtual_model=virtual_model,
+            request_body=request_body,
+            start_time=start_time,
             status="error",
-            provider_name=outcome.get("provider_name"),
-            provider_type=outcome.get("provider_type"),
-            provider_model=outcome.get("provider_model"),
-            provider_url=outcome.get("provider_url"),
-            attempt=outcome.get("attempt", 0),
             error_type=record_error_type,
             error_message=str(e),
-            latency_ms=latency_ms,
-            request_body=request_body,
-            input_tokens=usage.get("input_tokens"),
-            output_tokens=usage.get("output_tokens"),
-            cache_read_tokens=usage.get("cache_read_input_tokens"),
-            cache_write_tokens=usage.get("cache_creation_input_tokens"),
-            **_price_snapshot_kwargs(outcome),
-            cost_usd=_calculate_cost_usd(usage, outcome),
-            failover_details=failover,
+            usage=usage,
+            include_provider=True,
+            normalize_failover=True,
+            failover_errors=errors,
         )
         recorded = True
         if isinstance(e, UpstreamSSEError):
