@@ -96,6 +96,24 @@ def _price_snapshot_kwargs(outcome: Mapping[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
+def _failover_details(
+    outcome: Mapping[str, Any], errors: list[dict[str, Any]] | None = None
+) -> list[dict[str, Any]] | None:
+    """Preserve the same attempt fields across every error-recording path."""
+    failures = outcome.get("_failures") or errors
+    if not failures:
+        return None
+    return [
+        {
+            "provider": entry.get("provider"),
+            "model": entry.get("model"),
+            "error": entry.get("error"),
+            "latency_ms": entry.get("latency_ms"),
+        }
+        for entry in failures
+    ]
+
+
 # 预取首字节最长等待：超时后仍先返回 SSE 响应头，避免代理因无头超时；
 # 快速失败（冷却/容量/全失败）仍可在超时内转成 HTTP 429/503/502。
 # 超时后的限流会变成流内 error（HTTP 200），属有意取舍。
@@ -399,6 +417,7 @@ def create_app(
             else:
                 outcome: dict = {}
                 result = await engine.route_non_stream(upstream_body, outcome)
+                response = JSONResponse(result)
                 latency_ms = int((time.time() - start_time) * 1000)
                 usage = _validated_usage(result.get("usage"))
                 recorder.submit(
@@ -420,7 +439,7 @@ def create_app(
                     cost_usd=_calculate_cost_usd(usage, outcome),
                     failover_details=outcome.get("_failures"),
                 )
-                return JSONResponse(result)
+                return response
 
         except UnknownModelError as e:
             latency_ms = int((time.time() - start_time) * 1000)
@@ -471,14 +490,6 @@ def create_app(
             latency_ms = int((time.time() - start_time) * 1000)
             status_code = e.status_code or 502
             error_type = "invalid_request_error" if status_code < 500 else "api_error"
-            failover = [
-                {
-                    "provider": err["provider"],
-                    "model": err["model"],
-                    "error": err["error"],
-                }
-                for err in outcome.get("_failures", [])
-            ]
             recorder.submit(
                 virtual_model=virtual_model,
                 status="error",
@@ -487,7 +498,7 @@ def create_app(
                 attempt=outcome.get("attempt", 0),
                 latency_ms=latency_ms,
                 request_body=body,
-                failover_details=failover or None,
+                failover_details=_failover_details(outcome),
             )
             logger.warning(
                 "request.non_retryable_error",
@@ -511,6 +522,7 @@ def create_app(
                 attempt=outcome.get("attempt", 0),
                 latency_ms=latency_ms,
                 request_body=body,
+                failover_details=_failover_details(outcome),
             )
             logger.error(
                 "request.error",
@@ -765,14 +777,7 @@ async def _no_provider_response(
 ) -> JSONResponse:
     """Record unavailability using the accumulated count of upstream calls."""
     latency_ms = int((time.time() - start_time) * 1000)
-    failover = [
-        {
-            "provider": err["provider"],
-            "model": err["model"],
-            "error": err["error"],
-        }
-        for err in outcome.get("_failures") or e.errors
-    ]
+    failover = _failover_details(outcome, e.errors)
     status_code = 503 if e.kind == "capacity" else 429
     error_type = _record_error_type(e)
     recorder.submit(
@@ -811,14 +816,7 @@ async def _all_failed_response(
 ) -> JSONResponse:
     """Record exhausted routing without counting skipped providers as calls."""
     latency_ms = int((time.time() - start_time) * 1000)
-    failover = [
-        {
-            "provider": err["provider"],
-            "model": err["model"],
-            "error": err["error"],
-        }
-        for err in outcome.get("_failures") or e.errors
-    ]
+    failover = _failover_details(outcome, e.errors)
     recorder.submit(
         virtual_model=virtual_model,
         status="error",
@@ -865,7 +863,7 @@ def _validated_usage(value: Any) -> dict[str, int]:
 def _update_stream_usage(
     events: list[SSEEvent], usage: dict[str, Any], seen: set[str]
 ) -> None:
-    """Merge usage from the first valid Anthropic start and delta events.
+    """Merge first valid start usage and the largest cumulative delta counts.
 
     Accept only non-negative integer counts that fit SQLite's signed integers.
     Ignore malformed metadata so accounting cannot interrupt delivery, overwrite
@@ -879,7 +877,7 @@ def _update_stream_usage(
     for event in events:
         if event.event not in {"message_start", "message_delta"}:
             continue
-        if event.event in seen:
+        if event.event == "message_start" and event.event in seen:
             continue
         try:
             payload = json.loads(event.data)
@@ -896,8 +894,12 @@ def _update_stream_usage(
             event_usage = payload.get("usage")
         valid_usage = _validated_usage(event_usage)
         if valid_usage:
-            usage.update(valid_usage)
-            seen.add(event.event)
+            if event.event == "message_delta":
+                for name, count in valid_usage.items():
+                    usage[name] = max(usage.get(name, 0), count)
+            else:
+                usage.update(valid_usage)
+                seen.add(event.event)
 
 
 def _record_cancelled_stream(
@@ -987,16 +989,12 @@ async def _stream_wrapper(
         recorded = True
     except Exception as e:
         latency_ms = int((time.time() - start_time) * 1000)
-        failover = outcome.get("_failures")
-        if isinstance(e, (AllProvidersFailedError, NoProviderAvailableError)):
-            failover = [
-                {
-                    "provider": err["provider"],
-                    "model": err["model"],
-                    "error": err["error"],
-                }
-                for err in failover or e.errors
-            ]
+        errors = (
+            e.errors
+            if isinstance(e, (AllProvidersFailedError, NoProviderAvailableError))
+            else None
+        )
+        failover = _failover_details(outcome, errors)
         record_error_type = _record_error_type(e)
         recorder.submit(
             virtual_model=virtual_model,

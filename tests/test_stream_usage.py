@@ -14,6 +14,7 @@ from routelet.app import _stream_wrapper
 from routelet.db import CallStore
 from routelet.providers.base import RetryableError
 from routelet.recording import CallRecorder
+from routelet.routing import AllProvidersFailedError
 
 
 class _Stream:
@@ -157,6 +158,43 @@ async def test_valid_usage_after_malformed_event_is_recorded(
     assert call["status"] == "success"
     assert call["output_tokens"] == 0
     assert stream.closed
+
+
+async def test_multiple_valid_deltas_keep_largest_cumulative_usage(
+    recording: tuple[CallStore, CallRecorder],
+) -> None:
+    store, recorder = recording
+    chunks = [
+        _usage_events(2),
+        b'event: message_delta\ndata: {"usage":{"output_tokens":9}}\n\n',
+        b'event: message_delta\ndata: {"usage":{"output_tokens":5}}\n\n',
+    ]
+    stream = _Stream(chunks)
+
+    assert [part async for part in _wrap(stream, recorder)] == chunks
+    call = await _recorded_call(store, recorder)
+    assert call["input_tokens"] == 7
+    assert call["output_tokens"] == 9
+    assert call["cost_usd"] == pytest.approx(0.000025)
+
+
+async def test_stream_failure_keeps_attempt_latency(
+    recording: tuple[CallStore, CallRecorder],
+) -> None:
+    store, recorder = recording
+    failure = {
+        "provider": "first",
+        "model": "real",
+        "error": "unavailable",
+        "latency_ms": 17,
+    }
+    stream = _Stream([], error=AllProvidersFailedError("test", [failure]))
+
+    delivered = [part async for part in _wrap(stream, recorder)]
+    assert len(delivered) == 1
+    assert b"event: error" in delivered[0]
+    call = await _recorded_call(store, recorder)
+    assert json.loads(call["failover_details"]) == [failure]
 
 
 @pytest.mark.parametrize(
