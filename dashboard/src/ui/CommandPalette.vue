@@ -2,6 +2,7 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useWorkspace } from "../state/workspace";
+import { navigation } from "../domain/navigation";
 import Modal from "./Modal.vue";
 import Icon from "./Icon.vue";
 const emit = defineEmits<{ close: [] }>();
@@ -11,42 +12,7 @@ const query = ref(""),
   selected = ref(0);
 const items = computed(() =>
   [
-    {
-      label: "运行总览",
-      detail: "查看用量、费用与请求趋势",
-      path: "/",
-      icon: "overview",
-    },
-    {
-      label: "调用记录",
-      detail: "筛选请求，检查执行详情",
-      path: "/calls",
-      icon: "activity",
-    },
-    {
-      label: "Routers",
-      detail: "管理 Routers 与候选顺序",
-      path: "/routes",
-      icon: "routes",
-    },
-    {
-      label: "Providers",
-      detail: "管理连接、模型与价格",
-      path: "/providers",
-      icon: "providers",
-    },
-    {
-      label: "请求实验室",
-      detail: "发送请求，验证模型接入",
-      path: "/playground",
-      icon: "lab",
-    },
-    {
-      label: "系统设置",
-      detail: "服务、日志与熔断策略",
-      path: "/settings",
-      icon: "settings",
-    },
+    ...navigation,
     ...Object.keys(workspace.draft?.models ?? {}).map((name) => ({
       label: name,
       detail: "Router",

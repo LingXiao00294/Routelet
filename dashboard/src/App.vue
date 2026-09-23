@@ -5,6 +5,7 @@ import { useWorkspace } from "./state/workspace";
 import { useTelemetry } from "./state/telemetry";
 import { dismiss, notices, copyText } from "./state/notifications";
 import { usePolling } from "./composables/usePolling";
+import { navigation } from "./domain/navigation";
 import Icon from "./ui/Icon.vue";
 import CommandPalette from "./ui/CommandPalette.vue";
 import PublishDialog from "./ui/PublishDialog.vue";
@@ -37,14 +38,6 @@ watch(
   },
   { immediate: true },
 );
-const nav = [
-  { label: "运行总览", icon: "overview", path: "/", group: "工作空间" },
-  { label: "调用记录", icon: "activity", path: "/calls", group: "工作空间" },
-  { label: "请求实验室", icon: "lab", path: "/playground", group: "工作空间" },
-  { label: "Routers", icon: "routes", path: "/routes", group: "管理" },
-  { label: "Providers", icon: "providers", path: "/providers", group: "管理" },
-  { label: "系统设置", icon: "settings", path: "/settings", group: "管理" },
-];
 const endpoint = computed(() => window.location.origin + "/v1");
 function keydown(event: KeyboardEvent) {
   if (document.querySelector("dialog[open]") && !commandOpen.value) return;
@@ -100,12 +93,7 @@ async function discard() {
     <aside class="sidebar">
       <RouterLink to="/" class="brand" aria-label="Routelet 首页"
         ><span class="brand-mark"
-          ><img
-            src="/logo.png"
-            alt=""
-            width="40"
-            height="40"
-          /></span
+          ><img src="/logo.png" alt="" width="40" height="40" /></span
         ><span
           >Route<span class="brand-light">let</span
           ><small>LOCAL AI GATEWAY</small></span
@@ -120,7 +108,7 @@ async function discard() {
         <template v-for="group in ['工作空间', '管理']" :key="group"
           ><p class="nav-heading">{{ group }}</p>
           <RouterLink
-            v-for="item in nav.filter((item) => item.group === group)"
+            v-for="item in navigation.filter((item) => item.group === group)"
             :key="item.path"
             :to="item.path"
             class="nav-item"
@@ -239,8 +227,7 @@ async function discard() {
         <RouterView />
         <footer class="page-footer">
           <span
-            >ROUTELET
-            <span class="footer-dot">·</span> 本地优先，自由连接</span
+            >ROUTELET <span class="footer-dot">·</span> 本地优先，自由连接</span
           ><span v-if="telemetry.updated"
             >数据更新于
             {{
