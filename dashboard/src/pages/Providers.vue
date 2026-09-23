@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed, ref } from "vue";
+import { useSearchQuery } from "../composables/useSearchQuery";
 import { useWorkspace } from "../state/workspace";
 import { useTelemetry } from "../state/telemetry";
 import { affectedRoutes, removeCatalogEntry } from "../domain/config";
@@ -12,14 +12,9 @@ import EmptyState from "../ui/EmptyState.vue";
 import Modal from "../ui/Modal.vue";
 import ProviderEditor from "../ui/ProviderEditor.vue";
 import ModelEditor from "../ui/ModelEditor.vue";
-const route = useRoute(),
-  workspace = useWorkspace(),
+const workspace = useWorkspace(),
   telemetry = useTelemetry();
-const query = ref(String(route.query.q ?? ""));
-watch(
-  () => route.query.q,
-  (value) => (query.value = String(value ?? "")),
-);
+const query = useSearchQuery();
 const providerEdit = ref<string | null>(null);
 const modelEdit = ref<{ provider: string; model?: string } | null>(null);
 const removal = ref<{ provider: string; model?: string } | null>(null);
@@ -209,12 +204,15 @@ async function resetCircuit() {
           </button>
         </div>
       </div>
-      <div v-else class="catalog-empty">还没有模型，登记后即可用于 Router。</div>
+      <div v-else class="catalog-empty">
+        还没有模型，登记后即可用于 Router。
+      </div>
       <div class="provider-card-foot">
         <button class="text-link" @click="modelEdit = { provider: name }">
           <Icon name="plus" :size="15" />添加模型</button
         ><span
-          >{{ affectedRoutes(workspace.draft!, name).length }} 个 Router 引用</span
+          >{{ affectedRoutes(workspace.draft!, name).length }} 个 Router
+          引用</span
         ><button
           class="icon-button small danger-hover"
           :aria-label="'删除 Provider ' + name"
@@ -252,7 +250,8 @@ async function resetCircuit() {
   </section>
   <div class="info-strip">
     <Icon name="shield" :size="18" /><span
-      >连接状态仅表示密钥与熔断配置。要确认 Provider 实际可用，请在请求实验室发起测试。</span
+      >连接状态仅表示密钥与熔断配置。要确认 Provider
+      实际可用，请在请求实验室发起测试。</span
     >
   </div>
   <ProviderEditor
@@ -300,7 +299,8 @@ async function resetCircuit() {
     ><p>
       将立即重置
       <strong>{{ reset }}</strong>
-      的熔断状态和限流冷却。下次调用会重新尝试该 Provider，此操作直接作用于运行时。
+      的熔断状态和限流冷却。下次调用会重新尝试该
+      Provider，此操作直接作用于运行时。
     </p>
     <template #footer
       ><button class="button" :disabled="resetting" @click="reset = ''">
