@@ -272,9 +272,18 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_calls_model ON calls(virtual_model);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
-CREATE INDEX IF NOT EXISTS idx_calls_provider ON calls(provider_name, provider_model);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_model ON calls(
+    virtual_model, status, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, cost_usd, latency_ms
+);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_real ON calls(
+    provider_name, provider_model, status, input_tokens, output_tokens, cost_usd
+);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_day ON calls(
+    DATE(timestamp), status, input_tokens, output_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd
+);
 ```
 
 **写入语义：**
@@ -286,11 +295,11 @@ CREATE INDEX IF NOT EXISTS idx_calls_provider ON calls(provider_name, provider_m
 - 没有实际成功模型的失败调用不写入价格，四类字段保持 `NULL`。
 - 价格是调用发生时的快照；修改当前配置只影响后续调用，不回写历史记录。
 
-**Schema 兼容性：** 当前版本不兼容缺少价格快照字段的旧数据库，也不提供增量迁移。`CallStore` 在执行任何 DDL 前通过只读连接检查现有 `calls` 表；不兼容时列出缺失字段并拒绝启动；检测失败不会修改或覆盖原文件。备份与重建步骤见 [数据库兼容性](operations.md#调用记录数据库兼容性)。
+**Schema 兼容性：** 当前版本不兼容缺少价格快照字段的旧数据库，也不对缺失的表字段执行增量迁移。`CallStore` 在执行任何 DDL 前通过只读连接检查现有 `calls` 表；不兼容时列出缺失字段并拒绝启动；检测失败不会修改或覆盖原文件。兼容数据库上的统计索引会自动更新。备份与重建步骤见 [数据库兼容性](operations.md#调用记录数据库兼容性)。
 
 ### 8. api/metrics.py — 数据查询 API
 
-通过 `CallStore` 提供累计指标、按虚拟模型 / Provider / 实际模型分组、每日趋势和分页调用查询。列表仅取摘要字段，详情端点再读取正文与故障转移链，减少列表查询的数据量。真实模型分组和筛选始终使用独立的 Provider / model 字段。端点和参数见 [API 参考](api.md#调用记录与统计)。
+通过 `CallStore` 提供累计指标、按虚拟模型 / Provider / 实际模型分组、每日趋势和分页调用查询。统计使用覆盖索引读取状态、Token 和费用，按 UTC 日期的表达式索引支持每日分组；索引不含调用正文。列表仅取摘要字段，详情端点再读取正文与故障转移链，减少列表查询的数据量。真实模型分组和筛选始终使用独立的 Provider / model 字段。端点和参数见 [API 参考](api.md#调用记录与统计)。
 
 ### 9. monitoring.py — 日志
 

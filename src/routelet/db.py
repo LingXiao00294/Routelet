@@ -48,9 +48,20 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 
 CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);
-CREATE INDEX IF NOT EXISTS idx_calls_model ON calls(virtual_model);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
-CREATE INDEX IF NOT EXISTS idx_calls_provider ON calls(provider_name, provider_model);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_model ON calls(
+    virtual_model, status, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, cost_usd, latency_ms
+);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_real ON calls(
+    provider_name, provider_model, status, input_tokens, output_tokens, cost_usd
+);
+CREATE INDEX IF NOT EXISTS idx_calls_metrics_day ON calls(
+    DATE(timestamp), status, input_tokens, output_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd
+);
+DROP INDEX IF EXISTS idx_calls_model;
+DROP INDEX IF EXISTS idx_calls_provider;
 """
 
 CALL_SCHEMA_COLUMNS = frozenset(
@@ -532,7 +543,7 @@ class CallStore:
                 SUM(cache_write_tokens) AS cache_write_tokens,
                 SUM(cost_usd) AS cost_usd
             FROM calls
-            WHERE timestamp >= DATE('now', ?)
+            WHERE DATE(timestamp) >= DATE('now', ?)
             GROUP BY day ORDER BY day""",
             (f"-{days - 1} days",),
         )

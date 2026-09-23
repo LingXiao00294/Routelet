@@ -53,6 +53,53 @@ async def test_fresh_database_has_complete_calls_schema(tmp_path):
     assert {str(row[1]) for row in rows} == CALL_SCHEMA_COLUMNS
 
 
+async def test_existing_database_replaces_old_metrics_indexes_without_losing_calls(
+    tmp_path,
+):
+    db_path = tmp_path / "calls.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            SCHEMA.split("CREATE INDEX", 1)[0]
+            + "CREATE INDEX idx_calls_model ON calls(virtual_model);"
+            + "CREATE INDEX idx_calls_provider ON calls(provider_name, provider_model);"
+        )
+        conn.execute(
+            """INSERT INTO calls (id, timestamp, virtual_model, status)
+            VALUES (?, DATE('now'), ?, ?)""",
+            ("existing-call", "router", "success"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    store = CallStore(str(db_path))
+    await store.init()
+    try:
+        indexes = {
+            str(row[0])
+            for row in await store.conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+            )
+        }
+        call = await store.get_call("existing-call")
+        summary = await store.summary()
+        daily = await store.daily_trend(1)
+    finally:
+        await store.close()
+
+    assert {
+        "idx_calls_metrics_model",
+        "idx_calls_metrics_real",
+        "idx_calls_metrics_day",
+    } <= indexes
+    assert "idx_calls_model" not in indexes
+    assert "idx_calls_provider" not in indexes
+    assert call is not None and call["virtual_model"] == "router"
+    assert summary["total_calls"] == 1
+    assert daily[0]["count"] == 1
+
+
 async def test_record_preserves_null_and_zero_price_snapshots(tmp_path):
     store = CallStore(str(tmp_path / "calls.db"))
     await store.init()
