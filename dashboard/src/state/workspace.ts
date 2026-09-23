@@ -20,15 +20,10 @@ export const useWorkspace = defineStore("workspace", () => {
     saving = ref(false),
     error = ref(""),
     conflict = ref(false);
-  const dirty = computed(
-    () =>
-      !!draft.value &&
-      !!base.value &&
-      canonical(draft.value) !== canonical(base.value),
-  );
   const edits = computed(() =>
     base.value && draft.value ? changes(base.value, draft.value) : [],
   );
+  const dirty = computed(() => edits.value.length > 0);
   const problems = computed(() =>
     draft.value ? validateConfig(draft.value, base.value ?? undefined) : [],
   );
