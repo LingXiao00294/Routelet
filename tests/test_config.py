@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
 from routelet import app as app_module
 from routelet.api import config as config_api
@@ -236,6 +237,27 @@ class TestConfigDomainModel:
         assert config.models["router"].pinned_model == ModelRef(
             provider="p1", model="shared"
         )
+
+    def test_provider_connection_fields_reach_runtime_and_reject_extras(self):
+        raw = _raw_config()
+        raw["providers"]["p1"].update(
+            timeout_seconds=45.5,
+            failure_threshold=3,
+            recovery_timeout=70.0,
+            max_concurrent=4,
+            max_queue=7,
+            queue_wait_timeout=6.5,
+            rate_limit_cooldown=8.5,
+        )
+
+        config = parse_config_data(raw)
+        saved_fields = config.providers["p1"].model_dump(exclude={"models"})
+        runtime = config.models["router"].providers[0]
+        runtime_fields = runtime.model_dump()
+
+        assert {field: runtime_fields[field] for field in saved_fields} == saved_fields
+        with pytest.raises(ValidationError, match="extra_forbidden"):
+            ProviderConfig.model_validate({**runtime_fields, "typo_field": 1})
 
     def test_array_order_generates_priority(self, tmp_path):
         raw = _raw_config()

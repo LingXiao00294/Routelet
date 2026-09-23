@@ -95,8 +95,8 @@ class ActualModelDef(BaseModel):
         return _validate_non_negative_price(value)
 
 
-class ProviderDef(BaseModel):
-    """Provider 连接设置及其实际模型目录。"""
+class _ProviderSettings(BaseModel):
+    """Connection fields and validation shared by saved and runtime Providers."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -111,14 +111,6 @@ class ProviderDef(BaseModel):
     max_queue: int = 0
     queue_wait_timeout: float = 30.0
     rate_limit_cooldown: float = 30.0
-    models: dict[str, ActualModelDef] = Field(default_factory=dict)
-
-    @field_validator("api_key")
-    @classmethod
-    def api_key_must_not_be_empty(cls, value: str) -> str:
-        if not value:
-            raise ValueError("api_key 不能为空")
-        return value
 
     @field_validator("base_url")
     @classmethod
@@ -145,6 +137,19 @@ class ProviderDef(BaseModel):
     def positive_finite_recovery_timeout(cls, value: float | None) -> float | None:
         """Validate an optional Provider recovery timeout."""
         return _validate_optional_positive_finite(value)
+
+
+class ProviderDef(_ProviderSettings):
+    """Provider 连接设置及其实际模型目录。"""
+
+    models: dict[str, ActualModelDef] = Field(default_factory=dict)
+
+    @field_validator("api_key")
+    @classmethod
+    def api_key_must_not_be_empty(cls, value: str) -> str:
+        if not value:
+            raise ValueError("api_key 不能为空")
+        return value
 
     @field_validator("max_concurrent", "max_queue")
     @classmethod
@@ -200,52 +205,16 @@ class VirtualModelDef(BaseModel):
         return refs
 
 
-class ProviderConfig(BaseModel):
+class ProviderConfig(_ProviderSettings):
     """Provider 连接设置、实际模型价格与运行时优先级的解析结果。"""
 
-    type: Literal["anthropic"]
     name: str = ""
     model: str
-    api_key: str
-    base_url: str
     priority: int
-    timeout_seconds: float = 120.0
-    failure_threshold: int | None = None
-    recovery_timeout: float | None = None
-    max_concurrent: int = 0
-    max_queue: int = 0
-    queue_wait_timeout: float = 30.0
-    rate_limit_cooldown: float = 30.0
     input_price_per_million: float | None = None
     output_price_per_million: float | None = None
     cache_read_price_per_million: float | None = None
     cache_write_price_per_million: float | None = None
-
-    @field_validator("base_url")
-    @classmethod
-    def absolute_http_base_url(cls, value: str) -> str:
-        """Validate and normalize the Provider base URL."""
-        return _normalize_http_base_url(value)
-
-    @field_validator("timeout_seconds", "queue_wait_timeout", "rate_limit_cooldown")
-    @classmethod
-    def positive_finite_timeout(cls, value: float) -> float:
-        """Validate Provider timeout and cooldown durations."""
-        return _validate_positive_finite(value)
-
-    @field_validator("failure_threshold")
-    @classmethod
-    def positive_failure_threshold(cls, value: int | None) -> int | None:
-        """Validate an optional Provider failure threshold."""
-        if value is not None and value < 1:
-            raise ValueError("failure_threshold 必须大于等于 1")
-        return value
-
-    @field_validator("recovery_timeout")
-    @classmethod
-    def positive_finite_recovery_timeout(cls, value: float | None) -> float | None:
-        """Validate an optional Provider recovery timeout."""
-        return _validate_optional_positive_finite(value)
 
     @field_validator(*_PRICE_FIELDS)
     @classmethod
@@ -410,19 +379,10 @@ def _provider_config_from_def(
     priority: int,
 ) -> ProviderConfig:
     return ProviderConfig(
-        type=provider.type,
+        **provider.model_dump(exclude={"models"}),
         name=name,
         model=model,
-        api_key=provider.api_key,
-        base_url=provider.base_url,
         priority=priority,
-        timeout_seconds=provider.timeout_seconds,
-        failure_threshold=provider.failure_threshold,
-        recovery_timeout=provider.recovery_timeout,
-        max_concurrent=provider.max_concurrent,
-        max_queue=provider.max_queue,
-        queue_wait_timeout=provider.queue_wait_timeout,
-        rate_limit_cooldown=provider.rate_limit_cooldown,
         **actual_model.model_dump(),
     )
 
