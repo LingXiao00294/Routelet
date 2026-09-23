@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
 import { createRouter, createWebHistory } from "vue-router";
+import { navigation } from "./domain/navigation";
 import App from "./App.vue";
 import "./styles/workbench.css";
 import "./styles/cyberpunk.css";
@@ -8,36 +9,11 @@ const router = createRouter({
   history: createWebHistory(),
   scrollBehavior: () => ({ top: 0 }),
   routes: [
-    {
-      path: "/",
-      component: () => import("./pages/Overview.vue"),
-      meta: { title: "运行总览", section: "工作空间" },
-    },
-    {
-      path: "/calls",
-      component: () => import("./pages/Calls.vue"),
-      meta: { title: "调用记录", section: "工作空间" },
-    },
-    {
-      path: "/routes",
-      component: () => import("./pages/Routes.vue"),
-      meta: { title: "Routers", section: "管理" },
-    },
-    {
-      path: "/providers",
-      component: () => import("./pages/Providers.vue"),
-      meta: { title: "Providers", section: "管理" },
-    },
-    {
-      path: "/playground",
-      component: () => import("./pages/Playground.vue"),
-      meta: { title: "请求实验室", section: "工作空间" },
-    },
-    {
-      path: "/settings",
-      component: () => import("./pages/Settings.vue"),
-      meta: { title: "系统设置", section: "管理" },
-    },
+    ...navigation.map(({ path, component, label, group }) => ({
+      path,
+      component,
+      meta: { title: label, section: group },
+    })),
     {
       path: "/config/:section?",
       redirect: (to) => ({
