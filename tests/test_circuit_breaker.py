@@ -6,16 +6,16 @@ import json
 import httpx
 import pytest
 
-from agent_router.circuit_breaker import CircuitBreaker, CircuitState
-from agent_router.config import (
+from routelet.circuit_breaker import CircuitBreaker, CircuitState
+from routelet.config import (
     AppConfig,
     ProviderConfig,
     RouterConfig,
     ServerConfig,
     VirtualModelConfig,
 )
-from agent_router.providers.base import NonRetryableError
-from agent_router.routing import (
+from routelet.providers.base import NonRetryableError
+from routelet.routing import (
     AllProvidersFailedError,
     NoProviderAvailableError,
     Router,

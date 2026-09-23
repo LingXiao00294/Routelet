@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from agent_router.app import create_app
-from agent_router.cli.config_io import load_startup_config
-from agent_router.dashboard import find_dashboard_dist, mount_dashboard
-from agent_router.db import CallStore
+from routelet.app import create_app
+from routelet.cli.config_io import load_startup_config
+from routelet.dashboard import find_dashboard_dist, mount_dashboard
+from routelet.db import CallStore
 
 
 def _create_dist(tmp_path):

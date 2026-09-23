@@ -9,7 +9,7 @@ from typing import Unpack
 import structlog
 from structlog.contextvars import get_contextvars
 
-from agent_router.db import (
+from routelet.db import (
     CallRecordPayload,
     CallStore,
     _estimate_request_tokens,
@@ -60,9 +60,7 @@ class CallRecorder:
         if self._worker is not None and not self._worker.done():
             return
         self._accepting = True
-        self._worker = asyncio.create_task(
-            self._run(), name="agent-router-call-recorder"
-        )
+        self._worker = asyncio.create_task(self._run(), name="routelet-call-recorder")
 
     def submit(self, **record: Unpack[CallRecordPayload]) -> bool:
         """Enqueue a call record without waiting for SQLite.

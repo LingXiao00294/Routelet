@@ -2,10 +2,10 @@
   "env": {
     "ANTHROPIC_BASE_URL": "http://127.0.0.1:9456",
     "ANTHROPIC_AUTH_TOKEN": "PROXY_MANAGED",
-    "ANTHROPIC_MODEL": "opus-router",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL": "opus-router",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "sonnet-router",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "haiku-router",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "opus-router"
+    "ANTHROPIC_MODEL": "reasoning-route",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "reasoning-route",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "coding-route",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "fast-route",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "reasoning-route"
   }
 }

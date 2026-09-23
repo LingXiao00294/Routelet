@@ -7,11 +7,11 @@ import sys
 import pytest
 import uvicorn
 
-from agent_router import cli
-from agent_router.cli import app as cli_app
-from agent_router.cli import server
-from agent_router.cli.config_io import load_startup_config
-from agent_router.config import load_config
+from routelet import cli
+from routelet.cli import app as cli_app
+from routelet.cli import server
+from routelet.cli.config_io import load_startup_config
+from routelet.config import load_config
 
 
 @pytest.fixture
@@ -98,7 +98,7 @@ def test_unresolved_keys_allow_dashboard_setup(startup, tmp_path, monkeypatch, c
 
 
 def test_env_file_is_loaded_and_can_be_disabled(monkeypatch, tmp_path):
-    key = "AGENT_ROUTER_TEST_STARTUP_KEY"
+    key = "ROUTELET_TEST_STARTUP_KEY"
     monkeypatch.delenv(key, raising=False)
     env_file = tmp_path / ".env"
     env_file.write_text(f"{key}=secret\n", encoding="utf-8")
@@ -142,7 +142,7 @@ def test_help_and_version_do_not_start_service(startup, capsys):
     assert not startup
 
 
-@pytest.mark.parametrize("module", ["agent_router.main", "agent_router.cli"])
+@pytest.mark.parametrize("module", ["routelet.main", "routelet.cli"])
 def test_module_entrypoints_work_outside_repository(module, tmp_path):
     result = subprocess.run(
         [sys.executable, "-m", module, "--help"],

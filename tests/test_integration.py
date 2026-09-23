@@ -12,15 +12,15 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.requests import ClientDisconnect
 
-from agent_router import app as app_module
-from agent_router.app import (
+from routelet import app as app_module
+from routelet.app import (
     _calculate_cost_usd,
     _close_prefetched_stream,
     _prefetch_first_chunk,
     _stream_wrapper,
     create_app,
 )
-from agent_router.config import (
+from routelet.config import (
     AppConfig,
     ModelRef,
     ProviderConfig,
@@ -29,10 +29,10 @@ from agent_router.config import (
     VirtualModelConfig,
     parse_config_data,
 )
-from agent_router.db import CALL_SUMMARY_COLUMNS, CallStore
-from agent_router.recording import CallRecorder
-from agent_router.responses import ManagedStreamingResponse
-from agent_router.routing import NoProviderAvailableError, Router
+from routelet.db import CALL_SUMMARY_COLUMNS, CallStore
+from routelet.recording import CallRecorder
+from routelet.responses import ManagedStreamingResponse
+from routelet.routing import NoProviderAvailableError, Router
 
 
 def _passthrough_config() -> AppConfig:
@@ -1323,10 +1323,10 @@ class TestMessages:
         typed_headers = cast(dict[str, str], headers)
         assert typed_headers["anthropic-version"] == "2026-07-01"
         assert typed_headers["anthropic-beta"] == "context-1m-2025-08-07"
-        assert "_agent_router_anthropic_headers" not in upstream_body.decode()
+        assert "_routelet_anthropic_headers" not in upstream_body.decode()
         call = await _only_call_detail(store)
         recorded_body = json.loads(call["request_body"])
-        assert "_agent_router_anthropic_headers" not in recorded_body
+        assert "_routelet_anthropic_headers" not in recorded_body
 
     async def test_disconnect_closes_stream_and_records_cancellation(
         self, store, recorder
@@ -1602,7 +1602,7 @@ class TestMessages:
         self, store, recorder, monkeypatch
     ):
         """首字节预取超时后仍应先返回 SSE 头，再在响应体中交付内容."""
-        import agent_router.app as app_mod
+        import routelet.app as app_mod
 
         # 调用时读取模块常量，monkeypatch 可生效
         monkeypatch.setattr(app_mod, "_STREAM_FIRST_BYTE_PREFETCH_TIMEOUT", 0.05)

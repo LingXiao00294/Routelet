@@ -6,49 +6,49 @@ export function sampleConfig(): Config {
   return normalizeConfig({
     router: { mode: "failover", failure_threshold: 5, recovery_timeout: 600 },
     providers: {
-      Anthropic: {
+      ProviderA: {
         ...newProvider(),
         api_key: "sk-a********test",
         has_key: true,
         api_key_unresolved: false,
-        base_url: "https://api.anthropic.com",
+        base_url: "https://api.provider-a.example",
         models: {
-          "claude-sonnet-4-6": {
+          "model-a-pro": {
             input_price_per_million: 3,
             output_price_per_million: 15,
             cache_read_price_per_million: 0.3,
           },
-          "claude-haiku-4-5": {
+          "model-a-fast": {
             input_price_per_million: 1,
             output_price_per_million: 5,
           },
         },
       },
-      DeepSeek: {
+      ProviderB: {
         ...newProvider(),
         api_key: "sk-d********test",
         has_key: true,
         api_key_unresolved: false,
-        base_url: "https://api.deepseek.com/anthropic",
+        base_url: "https://api.provider-b.example",
         models: {
-          "deepseek-v4-pro": {
+          "model-b-pro": {
             input_price_per_million: 1.74,
             output_price_per_million: 3.48,
           },
-          "deepseek-v4-flash": {
+          "model-b-fast": {
             input_price_per_million: 0.14,
             output_price_per_million: 0.28,
           },
         },
       },
-      "智谱 AI": {
+      "ProviderC": {
         ...newProvider(),
-        api_key: "zai-********test",
+        api_key: "sk-c********test",
         has_key: true,
         api_key_unresolved: false,
-        base_url: "https://api.z.ai/api/anthropic",
+        base_url: "https://api.provider-c.example",
         models: {
-          "glm-5.2": {
+          "model-c-pro": {
             input_price_per_million: 1,
             output_price_per_million: 2,
           },
@@ -57,25 +57,25 @@ export function sampleConfig(): Config {
     },
     models: {
       "coding-assistant": {
-        pinned_model: { provider: "Anthropic", model: "claude-sonnet-4-6" },
+        pinned_model: { provider: "ProviderA", model: "model-a-pro" },
         models: [
-          { provider: "Anthropic", model: "claude-sonnet-4-6" },
-          { provider: "DeepSeek", model: "deepseek-v4-pro" },
-          { provider: "智谱 AI", model: "glm-5.2" },
+          { provider: "ProviderA", model: "model-a-pro" },
+          { provider: "ProviderB", model: "model-b-pro" },
+          { provider: "ProviderC", model: "model-c-pro" },
         ],
       },
       "fast-response": {
-        pinned_model: { provider: "DeepSeek", model: "deepseek-v4-flash" },
+        pinned_model: { provider: "ProviderB", model: "model-b-fast" },
         models: [
-          { provider: "DeepSeek", model: "deepseek-v4-flash" },
-          { provider: "Anthropic", model: "claude-haiku-4-5" },
+          { provider: "ProviderB", model: "model-b-fast" },
+          { provider: "ProviderA", model: "model-a-fast" },
         ],
       },
       "reasoning-pro": {
-        pinned_model: { provider: "DeepSeek", model: "deepseek-v4-pro" },
+        pinned_model: { provider: "ProviderB", model: "model-b-pro" },
         models: [
-          { provider: "DeepSeek", model: "deepseek-v4-pro" },
-          { provider: "智谱 AI", model: "glm-5.2" },
+          { provider: "ProviderB", model: "model-b-pro" },
+          { provider: "ProviderC", model: "model-c-pro" },
         ],
       },
     },
@@ -102,13 +102,13 @@ export function sampleCalls(): Call[] {
       String(i).padStart(12, "0"),
     timestamp: new Date(Date.now() - i * 137000).toISOString(),
     virtual_model: models[i % 3],
-    provider_name: i % 3 === 0 ? "Anthropic" : "DeepSeek",
+    provider_name: i % 3 === 0 ? "ProviderA" : "ProviderB",
     provider_model:
       i % 3 === 0
-        ? "claude-sonnet-4-6"
+        ? "model-a-pro"
         : i % 3 === 1
-          ? "deepseek-v4-flash"
-          : "deepseek-v4-pro",
+          ? "model-b-fast"
+          : "model-b-pro",
     attempt: i % 8 === 4 ? 2 : 1,
     latency_ms: 1240 + i * 29,
     status: i % 9 === 3 ? "error" : "success",
@@ -260,7 +260,7 @@ export async function installApi(page: Page, empty = false) {
       await route.fulfill({
         json: path.endsWith("/reset")
           ? { status: "ok" }
-          : { Anthropic: "closed", DeepSeek: "closed", "智谱 AI": "closed" },
+          : { ProviderA: "closed", ProviderB: "closed", "ProviderC": "closed" },
       });
       return;
     }
@@ -311,7 +311,7 @@ export async function installApi(page: Page, empty = false) {
       await route.fulfill({
         json: {
           content: [
-            { type: "text", text: "你好，我是通过 Agent Router 连接的模型。" },
+            { type: "text", text: "你好，我是通过 Routelet 连接的模型。" },
           ],
           usage: { input_tokens: 16, output_tokens: 24 },
         },

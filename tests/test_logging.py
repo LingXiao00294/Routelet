@@ -8,8 +8,8 @@ import pytest
 import structlog
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
-from agent_router import monitoring
-from agent_router.app import _sanitize_request_id
+from routelet import monitoring
+from routelet.app import _sanitize_request_id
 
 
 def _last_json_line(text: str) -> dict:
@@ -317,17 +317,17 @@ async def test_streaming_request_id_propagates(tmp_path):
     """
     import httpx
 
-    from agent_router.app import _stream_wrapper
-    from agent_router.config import (
+    from routelet.app import _stream_wrapper
+    from routelet.config import (
         AppConfig,
         ProviderConfig,
         RouterConfig,
         ServerConfig,
         VirtualModelConfig,
     )
-    from agent_router.db import CallStore
-    from agent_router.recording import CallRecorder
-    from agent_router.routing import Router
+    from routelet.db import CallStore
+    from routelet.recording import CallRecorder
+    from routelet.routing import Router
 
     log_file = tmp_path / "app.log"
     monitoring.setup_logging("info", log_file=str(log_file))

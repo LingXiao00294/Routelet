@@ -18,7 +18,7 @@ const commandOpen = ref(false),
   mobileOpen = ref(false);
 const dark = ref(false);
 try {
-  dark.value = localStorage.getItem("ar-theme") === "dark";
+  dark.value = localStorage.getItem("routelet-theme") === "dark";
 } catch {
   /* Storage is optional. */
 }
@@ -30,7 +30,7 @@ watch(
       .querySelector('meta[name="theme-color"]')
       ?.setAttribute("content", value ? "#0b1120" : "#e4eafb");
     try {
-      localStorage.setItem("ar-theme", value ? "dark" : "light");
+      localStorage.setItem("routelet-theme", value ? "dark" : "light");
     } catch {
       /* Storage is optional. */
     }
@@ -98,16 +98,16 @@ async function discard() {
       @click="mobileOpen = false"
     />
     <aside class="sidebar">
-      <RouterLink to="/" class="brand" aria-label="Agent Router 首页"
+      <RouterLink to="/" class="brand" aria-label="Routelet 首页"
         ><span class="brand-mark"
           ><img
-            src="/logo-mechanical-r.png"
+            src="/logo.png"
             alt=""
             width="40"
             height="40"
           /></span
         ><span
-          >agent<span class="brand-light">router</span
+          >Route<span class="brand-light">let</span
           ><small>LOCAL AI GATEWAY</small></span
         ></RouterLink
       >
@@ -149,8 +149,8 @@ async function discard() {
           </button>
         </div>
         <div class="sidebar-footer">
-          <span class="avatar">AR</span>
-          <div><strong>Agent Router</strong><span>让模型协作更简单</span></div>
+          <span class="avatar">R</span>
+          <div><strong>Routelet</strong><span>让模型协作更简单</span></div>
           <button
             class="theme-button"
             :aria-label="dark ? '切换浅色模式' : '切换深色模式'"
@@ -239,7 +239,7 @@ async function discard() {
         <RouterView />
         <footer class="page-footer">
           <span
-            >AGENT ROUTER
+            >ROUTELET
             <span class="footer-dot">·</span> 本地优先，自由连接</span
           ><span v-if="telemetry.updated"
             >数据更新于

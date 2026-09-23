@@ -1,6 +1,6 @@
 # 电镀机械 R Logo 设计稿
 
-使用内置 image_gen 生成，图片为 `logo-mechanical-r-concept.png`。已接入侧栏品牌标识与浏览器图标，应用资源为 `dashboard/public/logo-mechanical-r.png`。
+使用内置 image_gen 生成，图片为 `logo-mechanical-r-concept.png`。已接入侧栏品牌标识与浏览器图标，应用资源为 `dashboard/public/logo.png`。
 
 按用户要求采用近似 R 的规整外轮廓、不对称机械切面与接缝，以及银铬电镀、青色和紫红环境反光。
 

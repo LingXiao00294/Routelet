@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent_router.sse import SSEDecodeError, SSEDecoder, SSEEvent
+from routelet.sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 
 def test_decoder_joins_data_lines_across_chunks() -> None:

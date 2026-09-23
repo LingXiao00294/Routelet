@@ -58,7 +58,7 @@ function apply() {
           v-model="name"
           required
           :disabled="!!model"
-          placeholder="例如 claude-sonnet-4-6"
+          placeholder="例如 model-pro"
           autofocus
         /><small>必须与 Provider API 接受的模型 ID 完全一致。</small></label
       >

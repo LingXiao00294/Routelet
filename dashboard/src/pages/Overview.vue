@@ -324,7 +324,7 @@ const cards = computed(() => {
           <div class="provider-status-name">
             <strong>{{ name }}</strong
             ><span
-              >{{ Object.keys(provider.models).length }} 个模型 · Anthropic
+              >{{ Object.keys(provider.models).length }} 个模型 · Messages API
               兼容</span
             >
           </div>

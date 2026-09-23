@@ -9,10 +9,10 @@ from typing import Any
 import httpx
 import pytest
 
-from agent_router.app import create_app
-from agent_router.config import parse_config_data
-from agent_router.db import CallStore
-from agent_router.recording import CallRecorder
+from routelet.app import create_app
+from routelet.config import parse_config_data
+from routelet.db import CallStore
+from routelet.recording import CallRecorder
 
 _VALID_USAGE = {
     "input_tokens": 100,

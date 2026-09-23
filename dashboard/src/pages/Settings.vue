@@ -10,7 +10,7 @@ function exportConfig() {
   for (const provider of Object.values(config.providers))
     provider.api_key = "${YOUR_API_KEY}";
   downloadText(
-    "agent-router-config.redacted.json",
+    "routelet-config.redacted.json",
     JSON.stringify(config, null, 2),
     "application/json",
   );

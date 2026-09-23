@@ -11,8 +11,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from agent_router.api.metrics import create_metrics_router
-from agent_router.db import CallStore
+from routelet.api.metrics import create_metrics_router
+from routelet.db import CallStore
 
 _MAX_TOKEN_COUNT = 2**63 - 1
 _AGGREGATES = [

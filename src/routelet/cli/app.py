@@ -5,7 +5,7 @@ import sys
 from collections.abc import Sequence
 from importlib.metadata import PackageNotFoundError, version
 
-from agent_router.cli.server import command_start
+from routelet.cli.server import command_start
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -23,12 +23,12 @@ def _port(value: str) -> int:
 def run(argv: Sequence[str] | None = None) -> int:
     """Parse startup options; all management happens in the Dashboard."""
     try:
-        package_version = version("agent-router")
+        package_version = version("routelet")
     except PackageNotFoundError:
         package_version = "0.1.0"
     parser = argparse.ArgumentParser(
-        prog="agent-router",
-        description="启动 Agent Router API 和 Dashboard，并打开浏览器。",
+        prog="routelet",
+        description="启动 Routelet API 和 Dashboard，并打开浏览器。",
     )
     parser.add_argument("--version", action="version", version=package_version)
     parser.add_argument("-c", "--config", default="config.toml", help="配置文件路径")

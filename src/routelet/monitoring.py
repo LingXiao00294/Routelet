@@ -19,7 +19,7 @@ from structlog.processors import (
 )
 from structlog.stdlib import LoggerFactory, ProcessorFormatter
 
-from agent_router.config import (
+from routelet.config import (
     DEFAULT_LOG_BACKUP_COUNT,
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_MAX_BYTES,
@@ -168,7 +168,7 @@ def setup_logging(
 
     输出双路：
     - stdout：彩色简洁单行（长字段截断、errors 折叠），便于终端实时浏览
-    - 本地文件（log_file，默认 logs/agent-router.log，按大小轮转）：全量 JSON
+    - 本地文件（log_file，默认 logs/routelet.log，按大小轮转）：全量 JSON
 
     structlog / stdlib / uvicorn 日志经 ProcessorFormatter 统一走同一渲染管线；
     时间戳 UTC ISO，敏感字段自动脱敏。log_file 为空字符串时只输出到 stdout。

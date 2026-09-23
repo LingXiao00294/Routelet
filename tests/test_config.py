@@ -10,11 +10,11 @@ from typing import Any
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from agent_router import app as app_module
-from agent_router.api import config as config_api
-from agent_router.app import create_app
-from agent_router.cli.config_io import load_startup_config
-from agent_router.config import (
+from routelet import app as app_module
+from routelet.api import config as config_api
+from routelet.app import create_app
+from routelet.cli.config_io import load_startup_config
+from routelet.config import (
     ActualModelDef,
     AppConfig,
     ConfigError,
@@ -26,8 +26,8 @@ from agent_router.config import (
     load_config,
     parse_config_data,
 )
-from agent_router.db import CallStore
-from agent_router.routing import Router
+from routelet.db import CallStore
+from routelet.routing import Router
 
 
 BASE_TOML = """\

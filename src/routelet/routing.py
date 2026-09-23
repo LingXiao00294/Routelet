@@ -10,27 +10,27 @@ from typing import Literal
 import structlog
 from structlog.contextvars import get_contextvars
 
-from agent_router.circuit_breaker import CircuitBreaker, CircuitPermit, CircuitState
-from agent_router.config import (
+from routelet.circuit_breaker import CircuitBreaker, CircuitPermit, CircuitState
+from routelet.config import (
     AppConfig,
     ProviderConfig,
     VirtualModelConfig,
     has_unresolved_env_var,
 )
-from agent_router.provider_gate import (
+from routelet.provider_gate import (
     ProviderCapacityError,
     ProviderCooldownError,
     ProviderGate,
 )
-from agent_router.providers.anthropic_compat import AnthropicCompatProvider
-from agent_router.providers.base import (
+from routelet.providers.anthropic_compat import AnthropicCompatProvider
+from routelet.providers.base import (
     BaseProvider,
     NonRetryableError,
     RetryableError,
     UpstreamHTTPError,
     UpstreamSSEError,
 )
-from agent_router.sse import SSEDecodeError, SSEDecoder, SSEEvent
+from routelet.sse import SSEDecodeError, SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
 

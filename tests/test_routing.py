@@ -5,7 +5,7 @@ import json
 
 import httpx
 import pytest
-from agent_router.config import (
+from routelet.config import (
     AppConfig,
     ModelRef,
     ProviderConfig,
@@ -13,13 +13,13 @@ from agent_router.config import (
     ServerConfig,
     VirtualModelConfig,
 )
-from agent_router.routing import (
+from routelet.routing import (
     Router,
     UnknownModelError,
     AllProvidersFailedError,
     _check_stream_error,
 )
-from agent_router.providers.base import (
+from routelet.providers.base import (
     NonRetryableError,
     RetryableError,
     UpstreamHTTPError,
@@ -406,7 +406,7 @@ class TestRateLimitRouting:
                 "cache_write": None,
             }
             # p1 未熔断
-            from agent_router.circuit_breaker import CircuitState
+            from routelet.circuit_breaker import CircuitState
 
             assert (await router.circuit_breaker.state("p1")) == CircuitState.CLOSED
             assert router.provider_gate.is_in_cooldown("p1")

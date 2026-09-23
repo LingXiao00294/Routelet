@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-router"
+name = "routelet"
 version = "0.1.0"
 description = "本地 LLM API 路由代理 - 虚拟模型名映射多 provider，优先级故障转移"
 readme = "README.md"
@@ -21,21 +21,21 @@ dependencies = [
 ]
 
 [project.scripts]
-agent-router = "agent_router.main:main"
+routelet = "routelet.main:main"
 
 [tool.uv]
 package = true
 
 [tool.hatch.build.targets.wheel]
-only-include = ["src/agent_router", "dashboard/dist"]
+only-include = ["src/routelet", "dashboard/dist"]
 artifacts = ["dashboard/dist/**"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"config.toml.example" = "agent_router/config.toml.example"
+"config.toml.example" = "routelet/config.toml.example"
 
 [tool.hatch.build.targets.wheel.sources]
 "src" = ""
-"dashboard/dist" = "agent_router/dashboard_dist"
+"dashboard/dist" = "routelet/dashboard_dist"
 
 [tool.hatch.build.targets.sdist]
 include = [

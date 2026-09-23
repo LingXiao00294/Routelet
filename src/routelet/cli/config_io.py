@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from agent_router.config import AppConfig, has_unresolved_env_var, load_config
+from routelet.config import AppConfig, has_unresolved_env_var, load_config
 
 
 _INITIAL_CONFIG = """# 在 Dashboard 中添加 Provider 和虚拟模型。

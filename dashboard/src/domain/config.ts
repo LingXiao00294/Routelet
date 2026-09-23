@@ -26,7 +26,7 @@ export function normalizeConfig(raw: Partial<Config>): Config {
       host: "127.0.0.1",
       port: 9456,
       log_level: "info",
-      log_file: "logs/agent-router.log",
+      log_file: "logs/routelet.log",
       log_max_bytes: 10000000,
       log_backup_count: 5,
       ...raw.server,

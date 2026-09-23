@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
 
-from agent_router.db import CallStore
+from routelet.db import CallStore
 
 
 def create_metrics_router(store: CallStore) -> APIRouter:

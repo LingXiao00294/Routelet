@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from agent_router.config import ProviderConfig
+from routelet.config import ProviderConfig
 
 
 @dataclass(frozen=True)

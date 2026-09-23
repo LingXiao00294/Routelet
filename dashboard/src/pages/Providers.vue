@@ -120,7 +120,7 @@ async function resetCircuit() {
         }}</span>
         <div>
           <h2>{{ name }}</h2>
-          <span>Anthropic Messages API</span>
+          <span>Messages API</span>
         </div>
         <button
           class="icon-button"
@@ -222,7 +222,7 @@ async function resetCircuit() {
       @click="providerEdit = ''"
     >
       <span><Icon name="plus" :size="26" /></span><strong>连接更多可能</strong>
-      <p>添加一个 Anthropic 兼容 Provider</p>
+      <p>添加一个 Messages API 兼容 Provider</p>
     </button>
   </fieldset>
   <section v-if="workspace.draft && !providers.length" class="panel">
