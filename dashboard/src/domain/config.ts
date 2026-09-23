@@ -125,6 +125,22 @@ function finite(value: unknown, min: number, integer = false): boolean {
     (!integer || Number.isInteger(value))
   );
 }
+function httpUrl(raw: string): boolean {
+  if (/\s/.test(raw)) return false;
+  try {
+    const url = new URL(raw);
+    return (
+      ["https:", "http:"].includes(url.protocol) &&
+      !!url.hostname &&
+      !url.username &&
+      !url.password &&
+      !url.search &&
+      !url.hash
+    );
+  } catch {
+    return false;
+  }
+}
 export function validateConfig(config: Config, existing?: Config): string[] {
   const errors: string[] = [];
   if (!config.server.host.trim()) errors.push("监听地址不能为空");
@@ -152,19 +168,7 @@ export function validateConfig(config: Config, existing?: Config): string[] {
       errors.push(
         name + "：请输入完整 API Key，不能使用脱敏占位符；留空可保留原密钥",
       );
-    try {
-      const url = new URL(provider.base_url);
-      if (
-        !["https:", "http:"].includes(url.protocol) ||
-        !url.hostname ||
-        url.username ||
-        url.password ||
-        url.search ||
-        url.hash ||
-        /\s/.test(provider.base_url)
-      )
-        throw new Error();
-    } catch {
+    if (!httpUrl(provider.base_url)) {
       errors.push(
         name + "：请填写不含认证信息、查询参数和片段的完整 HTTP(S) 地址",
       );
