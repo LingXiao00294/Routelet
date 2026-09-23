@@ -136,9 +136,11 @@ def test_documented_config_loads_with_declared_environment_variables() -> None:
     """Keep the canonical documented config and env example in sync."""
     project_root = Path(__file__).resolve().parents[1]
     text = (project_root / "docs/configuration.md").read_text(encoding="utf-8")
-    example = re.search(r"```toml\n(.*?)\n```", text, re.DOTALL)
-    assert example is not None
-    config_text = example.group(1)
+    section = re.search(r"(?ms)^## 完整配置示例[^\n]*\n(.*?)(?=^## |\Z)", text)
+    assert section is not None
+    examples = re.findall(r"(?ms)^```toml\n(.*?)\n```", section.group(1))
+    assert len(examples) == 1
+    config_text = examples[0]
     config = parse_config_data(
         tomllib.loads(config_text), allow_unresolved_api_keys=True
     )
@@ -156,6 +158,26 @@ def test_documented_config_loads_with_declared_environment_variables() -> None:
     assert referenced <= declared, (
         f".env.example 缺少变量: {sorted(referenced - declared)}"
     )
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "README.md",
+        "docs/design.md",
+        "docs/operations.md",
+        "docs/dashboard.md",
+        "docs/configuration.md",
+    ],
+)
+def test_documented_toml_snippets_parse(document: str) -> None:
+    """Validate TOML snippets and complete configs in the main documentation."""
+    project_root = Path(__file__).resolve().parents[1]
+    text = (project_root / document).read_text(encoding="utf-8")
+    for snippet in re.findall(r"(?ms)^```toml\n(.*?)\n```", text):
+        data = tomllib.loads(snippet)
+        if "providers" in data and "models" in data:
+            parse_config_data(data, allow_unresolved_api_keys=True)
 
 
 def _write_config(tmp_path: Path, content: str = BASE_TOML) -> Path:

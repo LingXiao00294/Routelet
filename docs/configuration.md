@@ -87,9 +87,9 @@ Dashboard 对已有 Provider 留空 API Key 会保留旧值；新增 Provider �
 | `failure_threshold` | `5` | 连续失败熔断阈值，必须大于等于 1 |
 | `recovery_timeout` | `600.0` | 熔断后等待半开探测的秒数，必须是有限正数 |
 
-在 Dashboard 的「Routers」顶部切换「自动故障转移」，然后「检查并发布」生效。关闭时（`router.mode = "sticky"`，默认）每条虚拟模型只调用其固定模型，不重试其他候选；尚未固定时，面板自动选择第一个候选，可在「编辑 Router」中修改。开启时（`router.mode = "failover"`），可重试错误会按候选顺序尝试备用 Provider。开关同时适用于普通与流式请求，仍保留虚拟模型映射和熔断、冷却等保护。
+面板中切换模式、选择固定模型和发布的操作见 [第一次接入](dashboard.md#第一次接入)。两种模式下的错误与流式行为见 [路由模式与错误](api.md#路由模式与错误)。
 
-可重试错误、Provider 错误透传及 SSE 行为见 [API 参考](api.md)；熔断状态机与许可机制见 [架构设计](design.md)。
+熔断状态机与许可机制见 [架构设计](design.md)。
 
 ## Provider 字段
 

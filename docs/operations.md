@@ -11,6 +11,7 @@ routelet --help
 routelet --no-browser                  # 无桌面环境或不自动打开浏览器
 routelet -c config.toml --db calls.db   # 指定配置和数据库
 routelet --host 127.0.0.1 --port 9457  # 同时更改 API 与页面的监听地址
+routelet --host 0.0.0.0 --allow-remote  # 已按下方安全边界评估远程访问时使用
 routelet --env-file custom.env         # 覆盖默认的 ~/.routelet/.env
 routelet --no-env-file                 # 不加载环境变量文件
 routelet --dist dashboard/dist         # 指定前端构建目录
