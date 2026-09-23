@@ -482,10 +482,10 @@ class CallStore:
     async def by_provider(self) -> list[dict]:
         rows = await self.conn.execute_fetchall(
             """SELECT
-                COALESCE(provider_type, 'unknown') AS provider,
+                provider_name AS provider,
                 COUNT(*) AS count,
                 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count
-            FROM calls GROUP BY provider_type"""
+            FROM calls GROUP BY provider_name"""
         )
         return [dict(r) for r in rows]
 
