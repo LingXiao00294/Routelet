@@ -40,6 +40,31 @@ test("overview, time scope, command palette and theme", async ({ page }) => {
   expect(errors).toEqual([]);
 });
 
+test("provider and router search follows the URL and browser history", async ({
+  page,
+}) => {
+  await installApi(page);
+  await page.goto("/providers?view=catalog&q=ProviderA");
+  const providerSearch = page.getByRole("textbox", {
+    name: "搜索 Provider 或模型",
+  });
+  await expect(providerSearch).toHaveValue("ProviderA");
+  await providerSearch.fill("ProviderB");
+  await expect(page).toHaveURL(/providers\?view=catalog&q=ProviderB/);
+  await expect(page.locator(".provider-card")).toHaveCount(1);
+
+  await page.getByRole("link", { name: /^Routers/ }).click();
+  const routerSearch = page.getByRole("textbox", { name: "搜索 Router" });
+  await routerSearch.fill("fast-response");
+  await expect(page).toHaveURL(/routes\?q=fast-response/);
+  await expect(page.locator(".route-card")).toHaveCount(1);
+
+  await page.goBack();
+  await expect(providerSearch).toHaveValue("ProviderB");
+  await page.goForward();
+  await expect(routerSearch).toHaveValue("fast-response");
+});
+
 test("call pagination, structured filtering, inspector and CSV download", async ({
   page,
 }) => {
@@ -85,7 +110,9 @@ test("empty workspace onboarding through provider, catalog, route and publish", 
   const state = await installApi(page, true);
   await page.goto("/");
   await page.getByRole("link", { name: /连接第一个 Provider/ }).click();
-  await page.getByRole("button", { name: "添加 Provider", exact: true }).click();
+  await page
+    .getByRole("button", { name: "添加 Provider", exact: true })
+    .click();
   let dialog = page.getByRole("dialog");
   await dialog.getByLabel(/Provider 名称/).fill("test-provider");
   await dialog.getByLabel(/Base URL/).fill("https://api.example.test");
@@ -132,7 +159,10 @@ test("routing switch persists in both directions and supports keyboard", async (
 }) => {
   const state = await installApi(page);
   await page.goto("/routes");
-  const toggle = page.getByRole("switch", { name: "自动故障转移", exact: true });
+  const toggle = page.getByRole("switch", {
+    name: "自动故障转移",
+    exact: true,
+  });
   await expect(toggle).toBeChecked();
   await toggle.focus();
   await page.keyboard.press("Space");
@@ -473,7 +503,9 @@ test("mobile layouts, navigation and dialog focus remain usable", async ({
   }
   await page.getByRole("button", { name: "打开导航" }).click();
   await page.getByRole("link", { name: "Providers", exact: true }).click();
-  await page.getByRole("button", { name: "添加 Provider", exact: true }).click();
+  await page
+    .getByRole("button", { name: "添加 Provider", exact: true })
+    .click();
   await expect(page.getByRole("dialog")).toBeVisible();
   for (let index = 0; index < 15; index++) await page.keyboard.press("Tab");
   expect(

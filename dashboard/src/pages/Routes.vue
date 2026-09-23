@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { computed, ref } from "vue";
+import { useSearchQuery } from "../composables/useSearchQuery";
 import { useWorkspace } from "../state/workspace";
 import { catalog, clone, sameRef, own, refKey } from "../domain/config";
 import { copyText, notify } from "../state/notifications";
@@ -8,15 +8,10 @@ import Icon from "../ui/Icon.vue";
 import EmptyState from "../ui/EmptyState.vue";
 import Modal from "../ui/Modal.vue";
 import RouteEditor from "../ui/RouteEditor.vue";
-const route = useRoute(),
-  workspace = useWorkspace();
-const query = ref(String(route.query.q ?? "")),
+const workspace = useWorkspace();
+const query = useSearchQuery(),
   editing = ref<string | null>(null),
   removal = ref("");
-watch(
-  () => route.query.q,
-  (value) => (query.value = String(value ?? "")),
-);
 const routes = computed(() =>
   Object.entries(workspace.draft?.models ?? {}).filter(([name, model]) =>
     (
