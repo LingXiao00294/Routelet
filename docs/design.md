@@ -389,6 +389,7 @@ data: {"type":"message_stop"}
 
 - `cli/app.py` 使用标准库 argparse 解析配置、数据库、监听地址、静态文件和浏览器选项。
 - `paths.py` 统一解析 `~/.routelet/` 下的默认配置、数据库、环境变量和日志路径；显式 CLI 路径支持 `~`，相对 CLI 路径以工作目录为基准。日志相对路径始终基于 `~/.routelet/`，启动与热重载保持一致。
+- POSIX 下使用数据文件前，将默认数据目录及所需子目录收紧为 `0700`、已有状态文件收紧为 `0600`；新建状态文件在写入正文前以 `0600` 打开。配置原子替换、SQLite 初始化和日志轮转均保持私有权限；显式路径的父目录与 Windows ACL 不变。
 - `cli/config_io.py` 在首次运行时以排他写入方式创建 `~/.routelet/config.toml` 空配置，不覆盖已有文件；默认加载 `~/.routelet/.env`，校验配置，允许尚未解析的 Provider 密钥。旧启动目录的数据需手工迁移，不会随工作目录变化自动读取。
 - `cli/server.py` 创建 Router 应用，在所有 API 路由之后挂载 Dashboard，使用单个 Uvicorn 服务监听同一端口。只有监听成功后才打开浏览器，`--no-browser` 可禁用；打开失败仅提示 URL，不中止服务。
 - `dashboard.py` 使用 StaticFiles 提供构建资源，为前端历史路由返回 `index.html`。未知 API 和缺失资源仍返回 404，不会返回 SPA 页面，也不会读取静态目录外的文件。

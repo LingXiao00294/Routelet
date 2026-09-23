@@ -12,7 +12,7 @@ from typing import Any, Required, TypedDict, Unpack
 import aiosqlite
 import structlog
 
-from routelet.paths import resolve_path
+from routelet.paths import prepare_state_file, private_file_opener, resolve_path
 
 logger = structlog.get_logger(__name__)
 
@@ -221,9 +221,12 @@ class CallStore:
             return
 
         if self.db_path != Path(":memory:"):
+            prepare_state_file(self.db_path)
             if self.db_path.exists():
                 await self._validate_existing_schema()
-            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            # SQLite otherwise creates the database using the process umask.
+            with open(self.db_path, "ab", opener=private_file_opener):
+                pass
 
         conn = await aiosqlite.connect(str(self.db_path), factory=_MetricsConnection)
         try:
