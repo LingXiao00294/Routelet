@@ -16,7 +16,6 @@ dependencies = [
     "structlog>=25",
     "colorama>=0.4.6; sys_platform == 'win32'",
     "aiosqlite>=0.21",
-    "orjson>=3",
     "python-dotenv>=1.2.2",
 ]
 

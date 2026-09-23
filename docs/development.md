@@ -79,9 +79,8 @@ docs/                    # 配置、API、运维、架构、面板和开发文�
 | `pydantic` | 请求/响应/配置 数据校验 |
 | `structlog` | 结构化日志 (请求ID、provider、耗时、结果) |
 | `aiosqlite` | 异步 SQLite，调用记录持久化 |
-| `orjson` | 高性能 JSON 序列化 |
 
-TOML 解析使用标准库 `tomllib`。完整依赖和版本约束以 [pyproject.toml](../pyproject.toml) 与 [前端 package.json](../dashboard/package.json) 为准。
+JSON 序列化使用 Python 标准库 `json`，TOML 解析使用标准库 `tomllib`。完整依赖和版本约束以 [pyproject.toml](../pyproject.toml) 与 [前端 package.json](../dashboard/package.json) 为准。
 
 ## 测试与检查
 
