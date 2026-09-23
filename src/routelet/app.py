@@ -302,7 +302,7 @@ def create_app(
         # routing 层会 fallback 到新 uuid 而与 http.request 日志断链。
         request_id = get_contextvars().get("request_id")
         engine: Router = request.app.state.router_engine
-        result: dict[str, Any] | None = None
+        result: Any = None
 
         try:
             if is_stream:
@@ -418,6 +418,8 @@ def create_app(
             else:
                 outcome: dict = {}
                 result = await engine.route_non_stream(upstream_body, outcome)
+                if not isinstance(result, Mapping):
+                    raise ValueError("Provider 响应必须是 JSON 对象")
                 response = JSONResponse(result)
                 latency_ms = int((time.time() - start_time) * 1000)
                 usage = _validated_usage(result.get("usage"))
@@ -515,7 +517,11 @@ def create_app(
 
         except Exception as e:
             latency_ms = int((time.time() - start_time) * 1000)
-            usage = _validated_usage(result.get("usage")) if result is not None else {}
+            usage = (
+                _validated_usage(result.get("usage"))
+                if isinstance(result, Mapping)
+                else {}
+            )
             recorder.submit(
                 virtual_model=virtual_model,
                 status="error",

@@ -1005,6 +1005,36 @@ class TestMessages:
         assert call["input_price_per_million"] == 2.0
         assert call["cost_usd"] == pytest.approx(0.000002)
 
+    @pytest.mark.parametrize("upstream_body", [b"[]", b'"hello"', b"42"])
+    async def test_non_object_upstream_json_has_one_error_record(
+        self, app_config, store, recorder, upstream_body
+    ):
+        app_config.router.mode = "failover"
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=upstream_body,
+                headers={"content-type": "application/json"},
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            app.state.router_engine = Router(app_config, upstream)
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages", json={"model": "test-router", "messages": []}
+                )
+
+        assert response.status_code == 502
+        await recorder.wait_idle(timeout=1)
+        call = await _only_call_detail(store)
+        assert call["status"] == "error"
+        assert call["error_type"] == "ValueError"
+        assert call["attempt"] == 1
+        assert call["provider_name"] == "anthropic"
+
     @pytest.mark.parametrize(
         ("content", "message"),
         [
