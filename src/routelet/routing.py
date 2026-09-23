@@ -59,6 +59,15 @@ class _RoutingConfigChanged(Exception):
     """Signal that a not-yet-started attempt must use a newer config snapshot."""
 
 
+def _provider_pricing_snapshot(provider_cfg: ProviderConfig) -> dict[str, float | None]:
+    return {
+        "input": provider_cfg.input_price_per_million,
+        "output": provider_cfg.output_price_per_million,
+        "cache_read": provider_cfg.cache_read_price_per_million,
+        "cache_write": provider_cfg.cache_write_price_per_million,
+    }
+
+
 def _check_stream_error(buffer: bytes) -> None:
     """Check SSE buffer for error events and raise appropriate exception.
 
@@ -546,12 +555,7 @@ class Router:
                         outcome["provider_model"] = provider_cfg.model
                         outcome["provider_url"] = provider_cfg.base_url
                         outcome["attempt"] = attempt
-                        outcome["pricing"] = {
-                            "input": provider_cfg.input_price_per_million,
-                            "output": provider_cfg.output_price_per_million,
-                            "cache_read": provider_cfg.cache_read_price_per_million,
-                            "cache_write": provider_cfg.cache_write_price_per_million,
-                        }
+                        outcome["pricing"] = _provider_pricing_snapshot(provider_cfg)
 
                     return result
 
@@ -717,12 +721,7 @@ class Router:
                         outcome["provider_model"] = provider_cfg.model
                         outcome["provider_url"] = provider_cfg.base_url
                         outcome["attempt"] = attempt
-                        outcome["pricing"] = {
-                            "input": provider_cfg.input_price_per_million,
-                            "output": provider_cfg.output_price_per_million,
-                            "cache_read": provider_cfg.cache_read_price_per_million,
-                            "cache_write": provider_cfg.cache_write_price_per_million,
-                        }
+                        outcome["pricing"] = _provider_pricing_snapshot(provider_cfg)
                     error_decoder = SSEDecoder()
                     outcome["_stream_mode"] = "failover" if allow_failover else "sticky"
                     data_event_seen = False
