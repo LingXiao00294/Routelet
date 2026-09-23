@@ -724,6 +724,6 @@ test("circuit reset acts on runtime only after confirmation", async ({
     .click();
   expect(resets).toBe(1);
   await page.getByRole("button", { name: "确认重置", exact: true }).click();
-  expect(resets).toBe(2);
+  await expect.poll(() => resets).toBe(2);
   await expect(page.locator(".draft-bar")).toHaveCount(0);
 });
