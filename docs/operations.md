@@ -54,6 +54,16 @@ Routelet 不校验客户端传入的 token，Dashboard 还能读取调用详情�
 
 在仓库根目录执行 `uv run python scripts/query_logs.py` 可快速查看最近 20 条调用，默认只读打开 `~/.routelet/calls.db`。需要查询自定义数据库时，传入路径参数，例如 `uv run python scripts/query_logs.py ./my-calls.db`；显式相对路径以当前工作目录为基准。数据库不存在时脚本报错，不创建空文件。
 
+可按自身保留期清理过期调用。先停止 Routelet 并备份数据库，再在仓库根目录预览和执行，例如保留最近 90 天：
+
+```bash
+uv run python scripts/prune_calls.py --older-than-days 90
+uv run python scripts/prune_calls.py --older-than-days 90 --apply
+uv run python scripts/prune_calls.py --older-than-days 90 --apply --vacuum
+```
+
+默认只预览匹配条数，不修改数据库；`--apply` 才删除。`--vacuum` 可选，用于删除后回收磁盘空间，执行期间需要额外可用空间。脚本默认使用 `~/.routelet/calls.db`，通过 `--db PATH` 指定其他数据库；不存在时会报错，不创建文件。清理后累计统计只包含保留的调用记录；没有设置自动清理。
+
 启动时会为历史统计建立覆盖索引，并将旧的虚拟模型和 Provider 索引替换为统计索引。已有大型数据库首次升级需要等待索引构建，也需要额外磁盘空间；调用记录不会因此删除。
 
 调用记录属于尽力而为的观测数据，请求响应不等待 SQLite 提交。请求与非流式响应正文各自最多保存 256 KiB 的有效 JSON，超限内容保存为带 `_truncated`、原始字节数和文本预览的截断信封。

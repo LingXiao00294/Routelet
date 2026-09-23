@@ -124,7 +124,7 @@ SSE 支持流开头的 UTF-8 BOM，包括 BOM 字节跨数据块的情况；它�
 | `provider` | 未设置 | 按 Provider 名称筛选 |
 | `provider_model` | 未设置 | 按实际模型筛选，建议与 `provider` 组合使用 |
 
-`GET /api/metrics/daily` 的 `days` 默认为 30，范围 1–365。总览与模型排行统计全部历史数据，`days` 仅影响每日趋势；日期按 UTC 自然日聚合。`by-real-model` 按 Provider 与实际模型复合分组，分别返回 `provider`、`model` 字段，不将含 `/` 的名称拼接后再解析。
+`GET /api/metrics/daily` 的 `days` 默认为 30，范围 1–365。总览与模型排行统计数据库中保留的全部历史数据，`days` 仅影响每日趋势；日期按 UTC 自然日聚合。`by-real-model` 按 Provider 与实际模型复合分组，分别返回 `provider`、`model` 字段，不将含 `/` 的名称拼接后再解析。离线清理过期调用的方法见 [运行与维护](operations.md#日志与调用记录)。
 
 调用记录的 `attempt` 表示实际开始的 Provider 调用次数，跨配置热重载后的重新路由继续累计。本地容量不足、冷却、熔断或未解析密钥导致的跳过不计入次数；未发起任何 Provider 调用时为 `0`。故障转移明细仍保留相关失败及跳过原因。
 
