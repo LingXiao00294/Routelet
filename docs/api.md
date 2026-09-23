@@ -25,7 +25,7 @@
 | `GET` | `/api/circuit-breaker` | 查看各 Provider 的熔断状态 |
 | `POST` | `/api/circuit-breaker/{provider}/reset` | 重置指定 Provider 的熔断状态 |
 
-`GET /health` 返回 `{"status":"ok"}`。熔断重置立即影响运行时；Provider 名称作为路径参数时需 URL 编码，例如名称 `a/b` 对应 `/api/circuit-breaker/a%2Fb/reset`。
+`GET /health` 返回 `{"status":"ok"}`。熔断状态包含尚无调用的已配置 Provider（`closed`），恢复超时后显示 `half_open`；该接口不显示短冷却。重置会立即清除指定 Provider 的熔断状态与短冷却；Provider 名称作为路径参数时需 URL 编码，例如名称 `a/b` 对应 `/api/circuit-breaker/a%2Fb/reset`。
 
 ## 模型列表
 

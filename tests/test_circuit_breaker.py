@@ -76,6 +76,21 @@ class TestCircuitBreakerUnit:
         assert await cb.state("p1") == CircuitState.CLOSED
         assert await cb.is_available("p1")
 
+    async def test_state_snapshot_includes_idle_providers_and_recovers_open(self):
+        clock = _Clock()
+        cb = CircuitBreaker(recovery_timeout=600.0, clock=clock)
+        await cb.record_failure("p1", immediate=True)
+
+        assert await cb.get_all_states({"p1": 5.0, "fresh": 5.0}) == {
+            "p1": CircuitState.OPEN,
+            "fresh": CircuitState.CLOSED,
+        }
+        clock.advance(5.0)
+        assert await cb.get_all_states({"p1": 5.0, "fresh": 5.0}) == {
+            "p1": CircuitState.HALF_OPEN,
+            "fresh": CircuitState.CLOSED,
+        }
+
     async def test_consecutive_failures_open_circuit(self):
         cb = CircuitBreaker(failure_threshold=3)
         await cb.record_failure("p1")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
@@ -317,10 +317,17 @@ class CircuitBreaker:
             self._states.pop(provider, None)
             self._last_failure_time.pop(provider, None)
 
-    async def get_all_states(self) -> dict[str, CircuitState]:
-        """Return current state of all known providers."""
+    async def get_all_states(
+        self, recovery_timeouts: Mapping[str, float] | None = None
+    ) -> dict[str, CircuitState]:
+        """Return current states, including configured providers without traffic."""
+        recovery_timeouts = recovery_timeouts or {}
         async with self._lock:
             return {
-                p: self._states.get(p, CircuitState.CLOSED)
-                for p in set(self._states) | set(self._failure_counts)
+                p: self._state_locked(
+                    p, recovery_timeouts.get(p, self.recovery_timeout)
+                )
+                for p in set(self._states)
+                | set(self._failure_counts)
+                | set(recovery_timeouts)
             }

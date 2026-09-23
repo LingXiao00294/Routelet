@@ -262,3 +262,15 @@ def test_parse_retry_after_rejects_unsafe_values(value):
 
 def test_parse_retry_after_caps_large_delays():
     assert parse_retry_after("999999") == MAX_RETRY_AFTER_SECONDS
+
+
+def test_parse_retry_after_naive_http_date_uses_utc(monkeypatch):
+    from datetime import datetime, timezone
+
+    from routelet.providers import anthropic_compat
+
+    now = datetime(2026, 1, 1, 0, 0, 10, tzinfo=timezone.utc).timestamp()
+    monkeypatch.setattr(anthropic_compat, "time", lambda: now)
+    assert parse_retry_after("Thu, 01 Jan 2026 00:00:20") == 10.0
+    assert parse_retry_after("Thu, 01 Jan 2026 00:00:00") is None
+    assert parse_retry_after("0") == 0.0

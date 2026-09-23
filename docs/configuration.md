@@ -111,6 +111,8 @@ Dashboard 对已有 Provider 留空 API Key 会保留旧值；新增 Provider �
 
 并发与队列容量必须为非负整数；超时、冷却和恢复时间必须为有限正数。Provider 熔断参数未设置时继承 `router` 配置。
 
+限流响应中的 `Retry-After` 若为有效的未来 HTTP 日期，会按该日期等待；无时区日期按 UTC 解释。已过期日期无法提供有效等待时间，回退到 `rate_limit_cooldown`，避免立即重试持续限流的 Provider。数字 `0` 则明确表示立即可重试。
+
 当前版本仅实现 Messages API 兼容协议，`type` 必须为 `"anthropic"`。Chat Completions 协议转换仍在规划中；配置加载和 Dashboard 会拒绝未实现的协议类型。
 
 ## 实际模型与虚拟模型

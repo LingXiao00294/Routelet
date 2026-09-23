@@ -196,6 +196,20 @@ class TestProviderGateCooldown:
         async with gate.slot(cfg):
             pass
 
+    async def test_reset_ignores_old_in_flight_cooldown(self):
+        gate = ProviderGate()
+        cfg = _cfg()
+        gate.configure([cfg])
+
+        async with gate.slot(cfg) as old_generation:
+            gate.clear_cooldown("p1")
+            assert gate.enter_cooldown("p1", 30.0, generation=old_generation) == 0.0
+            assert not gate.is_in_cooldown("p1")
+
+        async with gate.slot(cfg) as new_generation:
+            assert new_generation != old_generation
+            assert gate.enter_cooldown("p1", 30.0, generation=new_generation) > 0
+
     async def test_configure_unlimited_invalidates_waiter(self):
         gate = ProviderGate()
         cfg = _cfg(max_concurrent=1, max_queue=2, queue_wait_timeout=2.0)
@@ -221,6 +235,16 @@ class TestProviderGateCooldown:
             await wait_task
         release.set()
         await task
+
+    async def test_removed_provider_rejects_new_slot(self):
+        gate = ProviderGate()
+        cfg = _cfg()
+        gate.configure([cfg])
+        gate.configure([])
+
+        with pytest.raises(ProviderCapacityError, match="配置已更新或移除"):
+            async with gate.slot(cfg):
+                pass
 
     async def test_queued_waiter_rechecks_cooldown(self):
         """持有者进入冷却并释放槽位后，排队者应收到冷却错误而非立刻打 Provider."""
