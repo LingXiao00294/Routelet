@@ -1,8 +1,12 @@
-# Routelet 设计文档
+# 架构设计
+
+[返回 README](../README.md) · [开发指南](development.md) · [API 参考](api.md)
+
+本文描述内部机制与设计取舍。字段和示例见 [配置参考](configuration.md)，运行、权限与迁移步骤见 [运行与维护](operations.md)。
 
 ## 概述
 
-本地 LLM API 路由代理。客户端的 API 基础地址指向 Routelet，虚拟模型名映射到多个真实 provider，按优先级路由，故障时自动转移到下一优先级。
+本地 LLM API 路由代理。客户端的 API 基础地址指向 Routelet，虚拟模型名映射到多个真实 provider，默认只调用固定模型；开启 failover 后按优先级路由，故障时自动转移到下一优先级。
 
 > 当前实现状态：仅支持 Messages API 兼容 Provider。本文中的 Chat Completions 协议转换属于后续路线图，未实现的协议类型会在配置加载阶段被拒绝。
 
@@ -11,124 +15,6 @@ Agent → Routelet (本地 FastAPI) → Provider A   (优先级 1)
                                → Provider B   (优先级 2, 故障转移)
                                → Provider C   (优先级 3, 故障转移)
 ```
-
----
-
-## 项目结构
-
-``` text
-routelet/
-├── pyproject.toml                  # 项目元数据 + 依赖
-├── docs/
-│   └── design.md                   # 本文档
-├── src/routelet/
-│   ├── __init__.py
-│   ├── main.py                     # 入口: argparse + uvicorn
-│   ├── app.py                      # FastAPI 应用 + 路由处理器
-│   ├── config.py                   # TOML 加载 + ${ENV_VAR} 插值 + Pydantic 校验
-│   ├── paths.py                    # 用户数据目录与显式路径解析
-│   ├── routing.py                  # 核心: 优先级链 + 故障转移 + 熔断
-│   ├── circuit_breaker.py          # Per-provider 熔断器 (CLOSED/OPEN/HALF_OPEN)
-│   ├── recording.py                # 有界队列 + 后台调用记录 writer
-│   ├── providers/                 # 抽象接口与 Messages API 兼容直通适配器
-│   ├── db.py                        # SQLite 调用记录持久化
-│   ├── api/
-│   │   ├── __init__.py
-│   │   └── metrics.py               # /api/metrics, /api/calls 查询接口
-│   └── monitoring.py                # 结构化日志
-├── dashboard/                       # Vue 模型路由工作台
-│   ├── src/
-│   │   ├── pages/                   # 六个工作区与 404 页面
-│   │   ├── ui/                      # 弹窗、编辑器、图表、调用详情
-│   │   ├── domain/                  # API 类型、配置规则和格式化
-│   │   ├── state/                   # Pinia 配置与监控状态
-│   │   ├── services/                # HTTP 与 SSE
-│   │   └── styles/                  # 响应式明暗主题
-│   ├── tests/                       # bun:test 领域与状态测试
-│   └── e2e/                         # Playwright 浏览器流程
-└── tests/
-    ├── conftest.py
-    ├── test_config.py
-    ├── test_routing.py
-    ├── test_circuit_breaker.py
-    ├── test_providers.py
-    └── test_integration.py
-```
-
----
-
-## 依赖
-
-| 依赖 | 用途 |
-| --- | --- |
-| `fastapi` | 异步 HTTP 框架，原生 SSE StreamingResponse |
-| `uvicorn[standard]` | ASGI 服务器 (uvloop + httptools) |
-| `httpx` | 异步 HTTP 客户端，连接池复用，流式支持 |
-| `pydantic` | 请求/响应/配置 数据校验 |
-| `structlog` | 结构化日志 (请求ID、provider、耗时、结果) |
-| `aiosqlite` | 异步 SQLite，调用记录持久化 |
-| `orjson` | 高性能 JSON 序列化 |
-
-TOML 解析使用 Python 3.11+ 标准库 `tomllib`，无需额外依赖。
-
----
-
-## 配置格式 (config.toml)
-
-运行配置默认位于 `~/.routelet/config.toml`，首次启动自动创建空配置，推荐通过 Dashboard 管理。以下是连接与模型配置示例，每个 Provider 的 `type` 必须为 `"anthropic"`。Provider 名称、模型、地址和价格均为示例，使用前请替换为实际值。
-
-```toml
-[server]
-host = "127.0.0.1"
-port = 9456
-
-# ==========================================
-# Provider 连接设置与实际模型目录
-# ==========================================
-[providers.provider-a]
-type = "anthropic"
-api_key = "${PROVIDER_A_API_KEY}"
-base_url = "https://api.provider-a.example"
-
-[providers.provider-a.models."model-a-fast"]
-input_price_per_million = 1.0             # 可选，USD / 1M Token
-output_price_per_million = 4.0
-cache_read_price_per_million = 0.1
-cache_write_price_per_million = 1.25
-
-[providers.provider-a.models."model-a-pro"]
-
-[providers.provider-b]
-type = "anthropic"
-api_key = "${PROVIDER_B_API_KEY}"
-base_url = "https://api.provider-b.example"
-
-[providers.provider-b.models."model-b-pro"]
-
-# ==========================================
-# 虚拟模型 — 只保存有序引用与结构化 pin
-# ==========================================
-
-[models.fast-route]
-pinned_model = { provider = "provider-a", model = "model-a-fast" }
-models = [
-  { provider = "provider-a", model = "model-a-fast" },
-  { provider = "provider-b", model = "model-b-pro" },
-]
-
-[models.coding-route]
-pinned_model = { provider = "provider-a", model = "model-a-pro" }
-models = [
-  { provider = "provider-a", model = "model-a-pro" },
-  { provider = "provider-b", model = "model-b-pro" },
-]
-```
-
-实际模型身份始终是结构化的 `(provider, model)`；`<provider>/<model>` 只用于展示，不用于反向解析。实际模型及四类价格只在 Provider 目录定义一次，虚拟模型数组顺序在运行时生成 `priority = index + 1`。模型费用均可省略：省略值在运行时保持 `None`，写入调用快照时为 SQLite `NULL`，只在计算费用时按 0；显式配置 0 则保留为数值 0。
-
-这是不兼容旧格式的 breaking change。旧版 `[[models.<name>.providers]]`、引用上的 `priority`/价格、字符串 `pinned_model` 与独立 `pinned_provider` 会返回明确错误；系统不自动读取、迁移或改写旧文件。
-
----
 
 ## 核心模块设计
 
@@ -141,49 +27,15 @@ models = [
 - Pydantic 校验结构完整性
 - 校验 Provider/实际模型引用、重复引用、非负价格和 sticky pin
 - 运行时启动允许未解析 `${ENV_VAR}`，用于新环境先打开 dashboard 配置
-- 严格校验命令会在环境变量未设置时失败，并打印具体 provider
+- 默认严格解析在密钥环境变量未设置时失败，并标明具体 Provider；启动路径显式允许未解析密钥
 - 使用结构化 `ConfigError`，可复用解析层不调用 `sys.exit()`
 
-**Pydantic 模型：**
+配置字段、默认值和完整示例统一见 [配置参考](configuration.md)。领域模型分成配置文件与运行时两层：
 
-```python
-class ActualModelDef(BaseModel):
-    input_price_per_million: float | None = None
-    output_price_per_million: float | None = None
-    cache_read_price_per_million: float | None = None
-    cache_write_price_per_million: float | None = None
-
-class ProviderDef(BaseModel):
-    # type 字段仅接受已实现的协议标识，具体值见完整配置示例
-    api_key: str
-    base_url: str
-    timeout_seconds: float = 120.0
-    models: dict[str, ActualModelDef]
-
-class ModelRef(BaseModel):
-    provider: str
-    model: str
-
-class VirtualModelDef(BaseModel):
-    pinned_model: ModelRef | None
-    models: list[ModelRef]
-
-class ProviderConfig(BaseModel):
-    # ProviderDef + ActualModelDef + ModelRef + 数组下标的运行时解析结果
-    name: str
-    model: str
-    priority: int
-    ...
-
-class ServerConfig(BaseModel):
-    host: str = "127.0.0.1"
-    port: int = 9456
-
-class AppConfig(BaseModel):
-    server: ServerConfig
-    providers: dict[str, ProviderDef]
-    models: dict[str, VirtualModelConfig]
-```
+| 层次 | 主要类型 | 职责 |
+| --- | --- | --- |
+| 配置文件 | `ConfigDocument`、`ProviderDef`、`ActualModelDef`、`ModelRef`、`VirtualModelDef` | 保留 Provider 模型目录、有序引用和固定模型 |
+| 运行时 | `AppConfig`、`VirtualModelConfig`、`ProviderConfig` | 合并连接信息、实际模型价格和候选优先级，供路由直接消费 |
 
 **TOML 解析要点：**
 
@@ -202,29 +54,17 @@ class AppConfig(BaseModel):
 **职责：**
 
 - 接收虚拟模型名 + Messages API 请求体
-- 按 priority 顺序遍历 provider 链
+- failover 模式按 priority 顺序遍历 Provider 链；sticky 模式仅选择固定模型
 - 每次尝试：调用 provider → 成功则返回 → 失败则判断是否重试
-- 全部失败返回 502 + 聚合错误
+- failover 模式全部失败返回 502 + 聚合错误
 
 关闭自动故障转移（sticky）时，Provider 异常保留完整 Provider HTTP 错误正文、状态码和响应头元数据。Router 先记录失败并更新熔断或冷却，再抛出透传异常，由 API 返回原始正文及必要的端到端错误头；故障转移模式继续使用原有错误分类。sticky 流式请求不使用提前发送 HTTP 200 的预取超时，收到 Provider 响应后才能确定响应状态；流内 SSE error 帧原样转发一次，仍记为失败。无 Provider 响应的传输错误及本地拒绝继续生成 Router 错误。
 
 预取超时策略读取已通过配置代次校验、实际开始调用的模式，不提前读取可变配置。尚未选定 Provider 或实际使用 sticky 时等待首块。failover 提前发送响应头后，若热重载要求重选到不同路由模式，则结束当前流并报告错误，避免进入无法兑现原始 HTTP 状态透传的 sticky 调用；已经开始的 Provider 调用仍按其原有模式完成。
 
-**错误分类：**
+HTTP / 传输错误的重试分类与对外响应见 [API 参考](api.md#路由模式与错误)。内部按错误分类更新熔断或短冷却；两种模式均保留本地保护，sticky 不尝试备用候选。
 
-| 错误 | 是否重试 | 熔断 | 说明 |
-| --- | --- | --- | --- |
-| HTTP 401 | ✅ 故障转移 | 🔴 立即熔断 | 认证失败；恢复超时后半开探测 |
-| HTTP 403 | ✅ 故障转移 | 🔴 立即熔断 | 权限不足；恢复超时后半开探测 |
-| HTTP 429 | ✅ 故障转移 | ❌（短冷却） | 按 `Retry-After` 或默认值暂时跳过 |
-| HTTP 529 | ✅ 故障转移 | ❌（短冷却） | API 过载，按限流策略暂时跳过 |
-| HTTP 5xx | ✅ 故障转移 | 🟡 连续触发 | 服务端错误 |
-| `httpx.ConnectError` | ✅ 故障转移 | 🟡 连续触发 | DNS/连接拒绝 |
-| `httpx.ConnectTimeout` | ✅ 故障转移 | 🟡 连续触发 | 网络不通 |
-| `httpx.ReadTimeout` | ✅ 故障转移 | 🟡 连续触发 | 响应超时 |
-| `httpx.RemoteProtocolError` | ✅ 故障转移 | 🟡 连续触发 | 连接异常关闭 |
-| HTTP 400, 404, 其他 4xx | ❌ 不重试 | — | 客户端错误，立即返回 |
-| 响应非 JSON | ❌ 不重试 | — | 协议错误 |
+`provider_gate.py` 管理每个 Provider 的并发槽、队列与冷却。热重载时以配置代次区分真实在途 I/O 与尚未调用 Provider 的旧请求：前者按原配置完成，后者（包括排队请求）重新读取最新配置并选择 Provider。重新选择不增加 Provider 调用计数，也不允许旧 URL、密钥或并发限制继续进入新的调用。
 
 ### 3. circuit_breaker.py — 熔断器
 
@@ -347,18 +187,11 @@ event: message_stop
 data: {"type":"message_stop"}
 ```
 
-这是整个项目最复杂的部分，先实现非流式，流式转换作为后续增强。
+计划先实现非流式转换，再实现流式转换；以上均为设计草案，当前未实现。
 
 ### 5. app.py — FastAPI 应用
 
-**端点：**
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/health` | 健康检查，返回 `{"status":"ok"}` |
-| `GET` | `/v1/models` | 返回虚拟模型列表，Messages API 模型列表 格式 |
-| `POST` | `/v1/messages` | 主聊天端点 |
-| `POST` | `/v1/messages?beta=true` | 客户端 可能带 beta 参数，忽略即可 |
+端点、模型列表格式、请求示例与错误契约见 [API 参考](api.md)。
 
 **`POST /v1/messages` 处理流程：**
 
@@ -372,24 +205,13 @@ data: {"type":"message_stop"}
 
 流式调用记录的职责随响应体开始消费而从端点交给包装器。预取期间取消、发送响应头失败、消费中断都提交一次取消记录；未启动响应体时由关闭回调回收已获取的资源并记录，避免依赖未启动生成器的 `finally`。
 
-**`GET /v1/models` 响应格式：**
-
-```json
-{
-  "data": [
-    {"id": "fast-route", "type": "model", "display_name": "fast-route", "created_at": "2025-01-01T00:00:00Z"},
-    {"id": "coding-route", "type": "model", "display_name": "coding-route", "created_at": "2025-01-01T00:00:00Z"}
-  ]
-}
-```
-
 ### 6. main.py + cli/ — 单一启动入口
 
 `routelet`、`python -m routelet.main` 与 `python -m routelet.cli` 均调用同一个启动入口；不再注册管理子命令或独立的 Dashboard 命令。`run` 返回整数退出码，进程入口 `main` 抛出 `SystemExit`。
 
 - `cli/app.py` 使用标准库 argparse 解析配置、数据库、监听地址、静态文件和浏览器选项。
-- `paths.py` 统一解析 `~/.routelet/` 下的默认配置、数据库、环境变量和日志路径；显式 CLI 路径支持 `~`，相对 CLI 路径以工作目录为基准。日志相对路径始终基于 `~/.routelet/`，启动与热重载保持一致。
-- POSIX 下使用数据文件前，将默认数据目录及所需子目录收紧为 `0700`、已有状态文件收紧为 `0600`；新建状态文件在写入正文前以 `0600` 打开。配置原子替换、SQLite 初始化和日志轮转均保持私有权限；显式路径的父目录与 Windows ACL 不变。
+- `paths.py` 统一解析用户数据目录与显式路径，启动与热重载共享相同的日志路径规则；具体规则见 [运行与维护](operations.md#数据目录与路径)。
+- 状态文件通过统一的权限辅助函数在写入正文前以私有权限打开；配置原子替换、SQLite 初始化和日志轮转延续该机制，避免短暂暴露敏感内容。平台与显式路径边界见 [文件权限](operations.md#文件权限)。
 - `cli/config_io.py` 在首次运行时以排他写入方式创建 `~/.routelet/config.toml` 空配置，不覆盖已有文件；默认加载 `~/.routelet/.env`，校验配置，允许尚未解析的 Provider 密钥。旧启动目录的数据需手工迁移，不会随工作目录变化自动读取。
 - `cli/server.py` 创建 Router 应用，在所有 API 路由之后挂载 Dashboard，使用单个 Uvicorn 服务监听同一端口。只有监听成功后才打开浏览器，`--no-browser` 可禁用；打开失败仅提示 URL，不中止服务。
 - `dashboard.py` 使用 StaticFiles 提供构建资源，为前端历史路由返回 `index.html`。未知 API 和缺失资源仍返回 404，不会返回 SPA 页面，也不会读取静态目录外的文件。
@@ -419,7 +241,7 @@ CREATE TABLE IF NOT EXISTS calls (
     provider_type   TEXT,                    -- 最终成功的 Provider 协议类型
     provider_model  TEXT,                    -- 真实模型名 (如 "model-a-fast")
     provider_url    TEXT,                    -- 实际调用的 API 端点
-    attempt         INTEGER DEFAULT 1,       -- 第几次尝试成功
+    attempt         INTEGER DEFAULT 1,       -- 实际开始的 Provider 调用次数
     latency_ms      INTEGER,                 -- 总耗时 (毫秒)
 
     -- 请求信息
@@ -463,25 +285,15 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 - 没有实际成功模型的失败调用不写入价格，四类字段保持 `NULL`。
 - 价格是调用发生时的快照；修改当前配置只影响后续调用，不回写历史记录。
 
-**Schema 兼容性：** 当前版本不兼容缺少价格快照字段的旧数据库，也不提供增量迁移。`CallStore` 在执行任何 DDL 前通过只读连接检查现有 `calls` 表；不兼容时列出缺失字段并要求开发者备份后手动重命名或删除旧库。检测失败不会修改或覆盖原文件。
+**Schema 兼容性：** 当前版本不兼容缺少价格快照字段的旧数据库，也不提供增量迁移。`CallStore` 在执行任何 DDL 前通过只读连接检查现有 `calls` 表；不兼容时列出缺失字段并拒绝启动；检测失败不会修改或覆盖原文件。备份与重建步骤见 [数据库兼容性](operations.md#调用记录数据库兼容性)。
 
 ### 8. api/metrics.py — 数据查询 API
 
-为 dashboard 提供数据查询接口：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/metrics/summary` | 概览统计 (总调用数、成功率、总 token、总费用) |
-| `GET` | `/api/metrics/by-model` | 按虚拟模型分组统计 |
-| `GET` | `/api/metrics/by-real-model` | 按 `(provider_name, provider_model)` 复合分组，返回独立 `provider`、`model` 字段 |
-| `GET` | `/api/metrics/by-provider` | 按 provider 分组统计 |
-| `GET` | `/api/calls?page=1&size=50` | 分页查询调用列表，可按独立 `provider`、`provider_model` 字段筛选 |
-| `GET` | `/api/calls/{id}` | 单次调用详情 (含完整 request/response) |
-| `GET` | `/api/metrics/daily` | 每日调用、四类 Token 与折算成本趋势 |
+通过 `CallStore` 提供累计指标、按虚拟模型 / Provider / 实际模型分组、每日趋势和分页调用查询。列表仅取摘要字段，详情端点再读取正文与故障转移链，减少列表查询的数据量。真实模型分组和筛选始终使用独立的 Provider / model 字段。端点和参数见 [API 参考](api.md#调用记录与统计)。
 
 ### 9. monitoring.py — 日志
 
-使用 `structlog` 记录结构化日志，覆盖请求全生命周期：
+使用 `structlog` 记录结构化日志，覆盖请求全生命周期。以下为事件示意：
 
 ``` text
 # 请求级别
@@ -506,11 +318,13 @@ CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 {"event": "server.shutdown", "reason": "SIGTERM", "pending_requests": 0}
 ```
 
-每条日志带 `request_id` 方便串联排查。
+请求相关日志携带 `request_id`，后台记录 writer 也保留提交时的上下文。日志路径、轮转和存储失败事件见 [运行与维护](operations.md#日志与调用记录)。
 
 ### 10. Dashboard (Vue) — 模型路由工作台
 
 Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/health` 和 `/v1/messages` 使用后端能力。生产静态资源随 Python 分发；开发服务器仅绑定 127.0.0.1。界面从信息架构、视觉与交互重新实现，采用独立的页面、领域逻辑、状态和基础组件。
+
+以下路径相对于 `dashboard/`：
 
 - `src/pages/`：总览、调用记录、Routers、Providers、请求实验室、系统设置和 404 页面。
 - `src/domain/`：后端类型、规范配置默认值、结构化模型引用、级联删除、发布校验、日期 / 金额 / CSV 辅助函数。
@@ -531,17 +345,7 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 
 弹窗使用原生 showModal 实现焦点约束，支持 Esc、遮罩关闭、编辑放弃确认、滚动锁定与焦点恢复。页面支持快捷搜索、键盘调整 Router 候选顺序、明暗主题和移动端导航。
 
-浏览器测试使用隔离的模拟 API，不接触真实 Provider 或凭据。配置与展示领域测试使用 bun:test；Playwright 覆盖从空配置接入到发布、跨页面草稿、冲突 / 失败、筛选并发、请求实验室和响应式布局。详见 [Dashboard 说明](dashboard.md)。
-
----
-
-## 客户端配置方式
-
-在支持 Messages API 的客户端中，将 API 基础地址指向 `http://127.0.0.1:9456`，模型设置为 Routelet 中已配置的虚拟模型，例如 `fast-route` 或 `coding-route`。具体设置项和环境变量名由客户端决定。
-
-客户端认证 token 可填写任意非空值，例如 `dummy`；Routelet 不校验该值。实际 Provider API key 在 `config.toml` 中配置，客户端无需持有。
-
----
+浏览器测试使用隔离的模拟 API，不接触真实 Provider 或凭据。配置与展示领域测试使用 bun:test；Playwright 覆盖从空配置接入到发布、跨页面草稿、冲突 / 失败、筛选并发、请求实验室和响应式布局。操作说明见 [Dashboard 使用说明](dashboard.md)，测试命令与环境见 [开发指南](development.md#测试与检查)。
 
 ## 关键设计决策
 
@@ -549,74 +353,9 @@ Vue 3 + TypeScript + Vite + Pinia + Vue Router，通过同源 `/api/*`、`/healt
 | --- | --- | --- |
 | 配置格式 | TOML | Python 标准库支持，项目统一 (pyproject.toml)，可读性好 |
 | 路由状态 | 有状态 (熔断器) | 每请求独立遍历 provider 链，但通过熔断器跳过持续故障的 provider |
-| 流式故障转移 | 无缓冲直传 | SSE 字节边收边发，优先保证延迟；流中断后的重试由客户端决定 |
+| 流式故障转移 | 按完整 SSE 事件校验后转发 | 首个有效事件前允许切换 Provider，交付后不拼接另一家的响应；流中断后的重试由客户端决定 |
 | HTTP 客户端 | 单实例复用 | 进程级 httpx.AsyncClient，按 base_url 自动连接池隔离 |
 | 调用记录 | 有界内存队列 + 单后台 writer | 观测存储故障不改变模型响应；队列满或 SQLite 故障时允许丢失记录 |
 | 配置热更新 | 原子写盘 + 运行时回滚 | 候选配置先完整验证；文件、Router、日志任一步失败都恢复旧状态 |
 | Provider 接口 | 统一 Messages API 格式 | routing.py 不感知后端协议，规划中的 Chat Completions 适配器负责内部转换 |
 | 熔断策略 | Per-provider 三态 | 401/403 立即熔断；5xx/瞬态传输错误连续失败后熔断；429/529 仅短冷却；600s 后单探测半开 |
-
----
-
-## 错误处理全景
-
-| 场景 | 行为 |
-| --- | --- |
-| 虚拟模型未配置 | 400 + 已知模型列表 |
-| 所有 provider 失败 | 502 + 聚合错误详情 |
-| 所有 provider 熔断 | 502 (无可用 provider) |
-| provider 返回 401/403 | 故障转移 + 立即熔断该 provider |
-| provider 返回 429/529 | 故障转移 + 按 `Retry-After` 或默认值进入短冷却，不累计熔断 |
-| provider 连续返回 5xx 或发生瞬态传输错误 | 故障转移 + 达阈值后熔断 |
-| 熔断 provider 恢复 | 600s 后半开探测，成功则关闭熔断器 |
-| 环境变量未设置 | `routelet` 可启动；路由时跳过对应 provider；严格配置解析仍失败 |
-| provider 返回非 JSON | 不可重试，立即返回 502 |
-| 流传输中断 | 关闭客户端连接，日志记录 |
-| 客户端断开 | 取消 Provider 请求 (asyncio.CancelledError) |
-| 请求体过大 (>50MB) | 413 |
-| SIGTERM | 优雅关闭：停止接收新请求，等待进行中请求完成 (30s 超时) |
-
----
-
-## 实现顺序
-
-| 阶段 | 内容 | 测试 |
-| --- | --- | --- |
-| 1 | pyproject.toml 依赖 + 目录结构 | - |
-| 2 | config.py (TOML 加载 + Pydantic 校验) | 合法/非法配置、环境变量插值、缺失变量报错 |
-| 3 | providers/ 抽象接口与 Messages API 适配器 | mock Provider，验证直通和 header 替换 |
-| 4 | routing.py (优先级链 + 故障转移) | 成功/429/5xx/超时/全部失败 各场景 |
-| 5 | app.py + main.py (FastAPI + 入口) | /health /v1/models /v1/messages |
-| 6 | monitoring.py (结构化日志) | 日志级别、request_id 串联 |
-| 7 | db.py (SQLite 调用记录) + api/metrics.py | 写入/查询调用记录 |
-| 8 | config.toml (示例配置) | - |
-| 9（规划） | Chat Completions 协议转换，先非流式 | 请求/响应转换正确性 |
-| 10 | dashboard/ (Vue 骨架) | 页面渲染、API 数据加载 |
-| 11 | 集成测试 + 端到端验证 | 启动 Routelet → curl 测试 → 客户端配置测试 |
-
----
-
-## 验证方式
-
-```bash
-# 1. 启动
-uv run routelet
-
-# 2. 健康检查
-curl http://127.0.0.1:9456/health
-
-# 3. 模型列表
-curl http://127.0.0.1:9456/v1/models
-
-# 4. 非流式请求
-curl -s -X POST http://127.0.0.1:9456/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"fast-route","max_tokens":100,"messages":[{"role":"user","content":"你好"}]}'
-
-# 5. 流式请求
-curl -s -X POST http://127.0.0.1:9456/v1/messages \
-  -H "Content-Type: application/json" \
-  -d '{"model":"fast-route","max_tokens":100,"stream":true,"messages":[{"role":"user","content":"你好"}]}'
-
-# 6. 故障转移测试 (故意配错第一个 provider 的 base_url)
-```
