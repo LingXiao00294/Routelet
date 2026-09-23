@@ -3,7 +3,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { clone, newProvider, normalizeConfig } from "../src/domain/config";
 import { useWorkspace } from "../src/state/workspace";
 import { useTelemetry } from "../src/state/telemetry";
-import { request } from "../src/services/http";
+import { ApiError, request, responseError } from "../src/services/http";
 const originalFetch = globalThis.fetch;
 beforeEach(() => setActivePinia(createPinia()));
 afterEach(() => {
@@ -166,6 +166,19 @@ describe("network behavior", () => {
     globalThis.fetch = (async () =>
       new Response("<html>offline</html>", { status: 503 })) as typeof fetch;
     await expect(request("/api/test")).rejects.toThrow("HTTP 503");
+  });
+  test("uses the same error envelope priority for raw responses", async () => {
+    const body = {
+      detail: "validation failed",
+      error: { message: "upstream failed" },
+    };
+    const rawResponse = response(body, 422);
+    const parsed = responseError(rawResponse, await rawResponse.text());
+    expect(parsed).toBeInstanceOf(ApiError);
+    expect(parsed.status).toBe(422);
+    expect(parsed.message).toBe("validation failed");
+    globalThis.fetch = (async () => response(body, 422)) as typeof fetch;
+    await expect(request("/api/test")).rejects.toThrow("validation failed");
   });
   test("timeout cancels a slow read", async () => {
     globalThis.fetch = ((_url: unknown, init: RequestInit) =>

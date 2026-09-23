@@ -4,7 +4,7 @@ import { onBeforeRouteLeave, useRoute } from "vue-router";
 import { useWorkspace } from "../state/workspace";
 import { useTelemetry } from "../state/telemetry";
 import { copyText } from "../state/notifications";
-import { errorText } from "../services/http";
+import { errorText, responseError } from "../services/http";
 import { EventDecoder, type StreamEvent } from "../services/stream";
 import { count, latency } from "../domain/format";
 import Icon from "../ui/Icon.vue";
@@ -120,14 +120,7 @@ async function send() {
     if (!response.ok) {
       const text = await response.text();
       raw.value = text;
-      let message = "请求失败（HTTP " + response.status + "）";
-      try {
-        const data = JSON.parse(text);
-        message = data.error?.message ?? data.detail ?? message;
-      } catch {
-        /* Keep HTTP status when not JSON. */
-      }
-      throw new Error(message);
+      throw responseError(response, text);
     }
     if (streaming.value) {
       if (!response.body) throw new Error("浏览器未收到响应流");
@@ -222,9 +215,8 @@ onUnmounted(() => {
                 <option value="" disabled>选择已发布的 Router</option>
                 <option v-for="name in models" :key="name">{{ name }}</option>
               </select>
-              <Icon name="down" :size="16" />
-            </span></label
-          >
+              <Icon name="down" :size="16" /> </span
+          ></label>
           <p v-if="model && !validModel" class="text-red help">
             此 Router 尚未发布或已被删除，请选择一个已发布 Router。
           </p>
