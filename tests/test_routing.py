@@ -17,6 +17,7 @@ from routelet.routing import (
     Router,
     UnknownModelError,
     AllProvidersFailedError,
+    NoProviderAvailableError,
     _check_stream_error,
 )
 from routelet.providers.base import (
@@ -256,6 +257,38 @@ class TestRouterHotReload:
             assert await asyncio.wait_for(route, timeout=1.0) == {"ok": True}
 
         assert requests == ["https://new.test/v1/messages"]
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_reset_does_not_restore_cooldown_from_in_flight_429(self, stream):
+        upstream_entered = asyncio.Event()
+        release_upstream = asyncio.Event()
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            upstream_entered.set()
+            await release_upstream.wait()
+            return httpx.Response(429, text="limited", headers={"Retry-After": "60"})
+
+        config = _reload_race_config(
+            base_url="https://p1.test", api_key="key", model="model"
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            router = Router(config, client)
+
+            async def route() -> None:
+                body = {"model": "m", "max_tokens": 10, "messages": []}
+                if stream:
+                    async for _ in router.route_stream(body):
+                        pass
+                else:
+                    await router.route_non_stream(body)
+
+            task = asyncio.create_task(route())
+            await asyncio.wait_for(upstream_entered.wait(), timeout=1.0)
+            router.provider_gate.clear_cooldown("p1")
+            release_upstream.set()
+            with pytest.raises(NoProviderAvailableError):
+                await asyncio.wait_for(task, timeout=1.0)
+            assert not router.provider_gate.is_in_cooldown("p1")
 
 
 class TestAllProvidersFailedError:

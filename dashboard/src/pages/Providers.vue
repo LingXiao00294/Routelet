@@ -124,6 +124,14 @@ async function resetCircuit() {
         </div>
         <button
           class="icon-button"
+          :aria-label="'重置 Provider 保护状态 ' + name"
+          :title="'重置 ' + name + ' 的熔断状态与限流冷却'"
+          @click="reset = name"
+        >
+          <Icon name="refresh" :size="17" />
+        </button>
+        <button
+          class="icon-button"
           :aria-label="'编辑 Provider ' + name"
           @click="providerEdit = name"
         >
@@ -165,7 +173,7 @@ async function resetCircuit() {
               ? "熔断中，暂时跳过此 Provider"
               : "半开状态，等待恢复探测"
           }}</span
-        ><button class="text-link" @click="reset = name">重置</button>
+        >
       </div>
       <div class="catalog-heading">
         <h3>

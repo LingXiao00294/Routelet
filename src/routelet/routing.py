@@ -201,6 +201,7 @@ class Router:
         i: int,
         *,
         permit: CircuitPermit | None,
+        cooldown_generation: int | None,
         allow_failover: bool,
         passthrough_errors: bool = False,
     ) -> None:
@@ -220,6 +221,7 @@ class Router:
                 e.retry_after
                 if e.retry_after is not None
                 else provider_cfg.rate_limit_cooldown,
+                generation=cooldown_generation,
             )
         elif is_retryable:
             await self.circuit_breaker.record_failure(
@@ -485,9 +487,10 @@ class Router:
         for i, provider_cfg in enumerate(providers):
             p_start = time.time()
             permit: CircuitPermit | None = None
+            cooldown_generation: int | None = None
 
             try:
-                async with self.provider_gate.slot(provider_cfg):
+                async with self.provider_gate.slot(provider_cfg) as cooldown_generation:
                     permit = await self.circuit_breaker.try_acquire(
                         provider_cfg.name,
                         recovery_timeout=provider_cfg.recovery_timeout,
@@ -578,6 +581,7 @@ class Router:
                         providers,
                         i,
                         permit=permit,
+                        cooldown_generation=cooldown_generation,
                         allow_failover=allow_failover,
                         passthrough_errors=not allow_failover,
                     )
@@ -671,9 +675,10 @@ class Router:
         for i, provider_cfg in enumerate(providers):
             p_start = time.time()
             permit: CircuitPermit | None = None
+            cooldown_generation: int | None = None
 
             try:
-                async with self.provider_gate.slot(provider_cfg):
+                async with self.provider_gate.slot(provider_cfg) as cooldown_generation:
                     permit = await self.circuit_breaker.try_acquire(
                         provider_cfg.name,
                         recovery_timeout=provider_cfg.recovery_timeout,
@@ -800,6 +805,7 @@ class Router:
                         providers,
                         i,
                         permit=permit,
+                        cooldown_generation=cooldown_generation,
                         allow_failover=can_failover,
                         passthrough_errors=not allow_failover,
                     )
