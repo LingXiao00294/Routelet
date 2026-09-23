@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
+from datetime import timezone
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from time import time
@@ -47,10 +48,12 @@ def parse_retry_after(value: str | None) -> float | None:
         pass
     try:
         dt = parsedate_to_datetime(value)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
         delay = dt.timestamp() - time()
-        if not isfinite(delay):
+        if not isfinite(delay) or delay <= 0:
             return None
-        return min(max(0.0, delay), MAX_RETRY_AFTER_SECONDS)
+        return min(delay, MAX_RETRY_AFTER_SECONDS)
     except (TypeError, ValueError, OverflowError):
         return None
 

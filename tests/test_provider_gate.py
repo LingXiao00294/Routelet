@@ -222,6 +222,16 @@ class TestProviderGateCooldown:
         release.set()
         await task
 
+    async def test_removed_provider_rejects_new_slot(self):
+        gate = ProviderGate()
+        cfg = _cfg()
+        gate.configure([cfg])
+        gate.configure([])
+
+        with pytest.raises(ProviderCapacityError, match="配置已更新或移除"):
+            async with gate.slot(cfg):
+                pass
+
     async def test_queued_waiter_rechecks_cooldown(self):
         """持有者进入冷却并释放槽位后，排队者应收到冷却错误而非立刻打 Provider."""
         gate = ProviderGate()

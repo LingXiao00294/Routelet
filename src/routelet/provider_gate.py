@@ -147,7 +147,9 @@ class ProviderGate:
         return remaining
 
     def clear_cooldown(self, name: str) -> None:
-        self._get(name).cooldown_until = 0.0
+        state = self._get(name)
+        state.cooldown_until = 0.0
+        self._schedule_notify(state)
 
     def snapshot(self) -> dict[str, dict]:
         """供监控 API 使用的状态快照."""
@@ -212,7 +214,12 @@ class ProviderGate:
             if not state.configured:
                 self._apply_limits(state, provider)
                 state.configured = True
-            self._raise_if_stale(name, state, state.generation)
+            if not state.active:
+                raise ProviderCapacityError(
+                    name,
+                    f"provider '{name}' 配置已更新或移除，请重新路由",
+                    retry_after=0.0,
+                )
             generation = state.generation
 
             remaining = self.cooldown_remaining(name)

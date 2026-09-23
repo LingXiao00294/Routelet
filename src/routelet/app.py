@@ -258,13 +258,26 @@ def create_app(
     @app.get("/api/circuit-breaker")
     async def get_circuit_breaker_states():
         """返回所有 provider 的熔断状态."""
-        states = await app.state.router_engine.circuit_breaker.get_all_states()
+        engine: Router = app.state.router_engine
+        timeouts = {
+            name: provider.recovery_timeout or engine.config.router.recovery_timeout
+            for name, provider in engine.config.providers.items()
+        }
+        for model in engine.config.models.values():
+            for provider in model.providers:
+                timeouts.setdefault(
+                    provider.name,
+                    provider.recovery_timeout or engine.config.router.recovery_timeout,
+                )
+        states = await engine.circuit_breaker.get_all_states(timeouts)
         return {name: state.value for name, state in states.items()}
 
     @app.post("/api/circuit-breaker/{provider:path}/reset")
     async def reset_circuit_breaker(provider: str):
-        """重置指定 provider 的熔断状态."""
-        await app.state.router_engine.circuit_breaker.reset(provider)
+        """重置指定 provider 的熔断状态和限流冷却."""
+        engine: Router = app.state.router_engine
+        await engine.circuit_breaker.reset(provider)
+        engine.provider_gate.clear_cooldown(provider)
         return {"status": "ok", "provider": provider}
 
     @app.get("/v1/models")

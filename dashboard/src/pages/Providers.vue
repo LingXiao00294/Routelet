@@ -63,7 +63,7 @@ async function resetCircuit() {
       "/api/circuit-breaker/" + encodeURIComponent(reset.value) + "/reset",
       { method: "POST" },
     );
-    notify("熔断状态已重置，下次请求将重新尝试该 Provider");
+    notify("熔断状态与限流冷却已重置，下次请求将重新尝试该 Provider");
     reset.value = "";
     await telemetry.refresh();
   } catch (error) {
@@ -286,13 +286,13 @@ async function resetCircuit() {
   >
   <Modal
     v-if="reset"
-    title="重置 Provider 熔断状态？"
+    title="重置 Provider 保护状态？"
     :busy="resetting"
     @close="reset = ''"
     ><p>
       将立即重置
       <strong>{{ reset }}</strong>
-      的熔断状态。下次调用会重新尝试该 Provider，此操作直接作用于运行时。
+      的熔断状态和限流冷却。下次调用会重新尝试该 Provider，此操作直接作用于运行时。
     </p>
     <template #footer
       ><button class="button" :disabled="resetting" @click="reset = ''">

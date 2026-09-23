@@ -211,6 +211,7 @@ async def test_circuit_reset_preserves_complete_provider_name(
         app.state.router_engine = engine
         await engine.circuit_breaker.record_failure(provider, immediate=True)
         await engine.circuit_breaker.record_failure("other", immediate=True)
+        engine.provider_gate.enter_cooldown(provider, 60)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://test"
         ) as client:
@@ -222,7 +223,10 @@ async def test_circuit_reset_preserves_complete_provider_name(
     assert response.json()["provider"] == provider
     assert provider not in states
     assert (await engine.circuit_breaker.state(provider)).value == "closed"
+    assert not engine.provider_gate.is_in_cooldown(provider)
     assert states["other"] == "open"
+    assert states["primary"] == "closed"
+    assert states["backup"] == "closed"
 
 
 @pytest.mark.parametrize(
