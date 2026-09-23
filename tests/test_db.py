@@ -24,6 +24,22 @@ PRICE_SNAPSHOT_COLUMNS = (
 )
 
 
+async def test_default_database_uses_home_and_creates_parent(
+    routelet_home, tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    store = CallStore()
+    assert store.db_path == routelet_home / "calls.db"
+    assert not routelet_home.exists()
+    await store.init()
+    try:
+        await store.record(virtual_model="router", status="success")
+    finally:
+        await store.close()
+    assert store.db_path.is_file()
+    assert not (tmp_path / "calls.db").exists()
+
+
 async def test_fresh_database_has_complete_calls_schema(tmp_path):
     db_path = tmp_path / "calls.db"
     store = CallStore(str(db_path))

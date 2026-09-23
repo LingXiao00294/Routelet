@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, MutableMapping
 import logging
 import sys
+from io import TextIOWrapper
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from routelet.config import (
     DEFAULT_LOG_FILE,
     DEFAULT_LOG_MAX_BYTES,
 )
+from routelet.paths import data_path, prepare_state_file, private_file_opener
 
 # 命中即对值脱敏的敏感键名（小写精确匹配）。
 _SENSITIVE_KEYS = frozenset(
@@ -158,6 +160,19 @@ def _shared_processors() -> list:
     ]
 
 
+class _PrivateRotatingFileHandler(RotatingFileHandler):
+    def _open(self) -> TextIOWrapper:
+        # Called both at startup and after every rollover.
+        prepare_state_file(Path(self.baseFilename))
+        return open(
+            self.baseFilename,
+            "a",
+            encoding=self.encoding,
+            errors=self.errors,
+            opener=private_file_opener,
+        )
+
+
 def setup_logging(
     level: str = "info",
     log_file: str = DEFAULT_LOG_FILE,
@@ -168,10 +183,11 @@ def setup_logging(
 
     输出双路：
     - stdout：彩色简洁单行（长字段截断、errors 折叠），便于终端实时浏览
-    - 本地文件（log_file，默认 logs/routelet.log，按大小轮转）：全量 JSON
+    - 本地文件（默认 ~/.routelet/logs/routelet.log，按大小轮转）：全量 JSON
 
     structlog / stdlib / uvicorn 日志经 ProcessorFormatter 统一走同一渲染管线；
-    时间戳 UTC ISO，敏感字段自动脱敏。log_file 为空字符串时只输出到 stdout。
+    时间戳 UTC ISO，敏感字段自动脱敏。相对日志路径基于 ~/.routelet；
+    log_file 为空字符串时只输出到 stdout。
     """
     log_level = getattr(logging, level.upper(), logging.INFO)
 
@@ -204,10 +220,21 @@ def setup_logging(
         handlers.append(stdout_handler)
 
         if log_file:
-            path = Path(log_file)
-            if path.parent and not path.parent.exists():
-                path.parent.mkdir(parents=True, exist_ok=True)
-            file_handler = RotatingFileHandler(
+            path = data_path(log_file)
+            prepare_state_file(path)
+            # Tighten any backups retained from versions using permissive modes.
+            prefix = f"{path.name}."
+            backups = (
+                path.parent.iterdir() if path.is_relative_to(data_path(".")) else ()
+            )
+            for backup in backups:
+                if (
+                    backup.name.startswith(prefix)
+                    and backup.name[len(prefix) :].isdigit()
+                    and backup.is_file()
+                ):
+                    prepare_state_file(backup)
+            file_handler = _PrivateRotatingFileHandler(
                 str(path),
                 maxBytes=log_max_bytes,
                 backupCount=log_backup_count,
@@ -238,7 +265,7 @@ def setup_logging(
     structlog.get_logger("monitoring").info(
         "logging.configured",
         level=level,
-        log_file=log_file or None,
+        log_file=str(path) if log_file else None,
         stdout="brief",
         file="full_json" if log_file else None,
     )

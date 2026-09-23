@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException
 
 from routelet.config import AppConfig, ConfigError, has_unresolved_env_var
 from routelet.config import parse_config_data
+from routelet.paths import prepare_state_file, restrict_file_permissions
 
 
 class RuntimeReloadError(RuntimeError):
@@ -161,6 +162,7 @@ def _replace_file(path: Path, content: bytes) -> None:
     """Atomically replace a file through a unique sibling temporary file."""
     tmp_path: Path | None = None
     try:
+        prepare_state_file(path)
         # 唯一同目录文件同时满足 os.replace 的原子性，并避免多个进程或测试实例
         # 共用固定 ``config.toml.tmp`` 时互相覆盖。
         with NamedTemporaryFile(
@@ -171,6 +173,7 @@ def _replace_file(path: Path, content: bytes) -> None:
             delete=False,
         ) as tmp_file:
             tmp_path = Path(tmp_file.name)
+            restrict_file_permissions(tmp_file.fileno())
             tmp_file.write(content)
         tmp_path.replace(path)
     finally:

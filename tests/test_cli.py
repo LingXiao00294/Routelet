@@ -4,14 +4,17 @@ import logging
 import subprocess
 import sys
 
+import httpx
 import pytest
 import uvicorn
 
 from routelet import cli
+from routelet.app import create_app
 from routelet.cli import app as cli_app
 from routelet.cli import server
 from routelet.cli.config_io import load_startup_config
 from routelet.config import load_config
+from routelet.db import CallStore
 
 
 @pytest.fixture
@@ -37,11 +40,18 @@ def startup(monkeypatch, tmp_path):
     return seen
 
 
-def test_single_command_initializes_config_and_combines_services(startup, tmp_path):
+def test_single_command_initializes_config_and_combines_services(
+    startup, tmp_path, routelet_home, capsys
+):
     assert cli.run([]) == 0
-    config = load_config(tmp_path / "config.toml")
+    config = load_config(routelet_home / "config.toml")
     assert config.providers == {}
     assert config.models == {}
+    assert not (tmp_path / "config.toml").exists()
+    assert not (tmp_path / "calls.db").exists()
+    output = capsys.readouterr().out
+    assert str(routelet_home / "config.toml") in output
+    assert str(routelet_home / "calls.db") in output
     instance = startup[0]
     assert instance.config.host == "127.0.0.1"
     assert instance.config.port == 9456
@@ -61,8 +71,9 @@ def test_startup_overrides_and_no_browser_preserve_existing_config(startup, tmp_
     assert config.read_text(encoding="utf-8") == original
 
 
-def test_invalid_config_is_reported_without_overwriting(startup, tmp_path, capsys):
-    config = tmp_path / "config.toml"
+def test_invalid_config_is_reported_without_overwriting(startup, routelet_home, capsys):
+    routelet_home.mkdir()
+    config = routelet_home / "config.toml"
     config.write_text("invalid [", encoding="utf-8")
     assert cli.run([]) == 1
     assert not startup
@@ -70,11 +81,13 @@ def test_invalid_config_is_reported_without_overwriting(startup, tmp_path, capsy
     assert "读取配置文件失败" in capsys.readouterr().err
 
 
-def test_missing_assets_prevent_partial_startup(startup, monkeypatch, tmp_path, capsys):
+def test_missing_assets_prevent_partial_startup(
+    startup, monkeypatch, routelet_home, capsys
+):
     monkeypatch.setattr(server, "find_dashboard_dist", lambda path: None)
     assert cli.run([]) == 1
     assert not startup
-    assert not (tmp_path / "config.toml").exists()
+    assert not routelet_home.exists()
     assert "bun run build" in capsys.readouterr().err
 
 
@@ -86,15 +99,102 @@ def test_remote_bind_requires_opt_in(startup, capsys):
     assert startup[0].browser_url == "http://127.0.0.1:9456"
 
 
-def test_unresolved_keys_allow_dashboard_setup(startup, tmp_path, monkeypatch, capsys):
+def test_unresolved_keys_allow_dashboard_setup(
+    startup, routelet_home, monkeypatch, capsys
+):
     monkeypatch.delenv("MISSING_STARTUP_KEY", raising=False)
-    (tmp_path / "config.toml").write_text(
+    routelet_home.mkdir()
+    (routelet_home / "config.toml").write_text(
         '[providers.test]\ntype = "anthropic"\napi_key = "${MISSING_STARTUP_KEY}"\n'
         'base_url = "https://example.test"\n',
         encoding="utf-8",
     )
     assert cli.run(["--no-env-file"]) == 0
     assert "api_key 未解析" in capsys.readouterr().err
+
+
+async def test_default_state_survives_dashboard_save_and_a_different_cwd(
+    startup, routelet_home, tmp_path, monkeypatch
+):
+    key = "ROUTELET_TEST_HOME_KEY"
+    monkeypatch.delenv(key, raising=False)
+    routelet_home.mkdir()
+    (routelet_home / ".env").write_text(f"{key}=home-key\n", encoding="utf-8")
+    (routelet_home / "config.toml").write_text(
+        '[providers.test]\ntype = "anthropic"\n'
+        f'api_key = "${{{key}}}"\nbase_url = "https://example.test"\n',
+        encoding="utf-8",
+    )
+    # A stale project config and .env must never override the shared defaults.
+    (tmp_path / "config.toml").write_text("invalid [", encoding="utf-8")
+    (tmp_path / ".env").write_text(f"{key}=cwd-key\n", encoding="utf-8")
+    assert cli.run([]) == 0
+    app = startup[0].config.app
+    assert app.state.router_engine.config.providers["test"].api_key == "home-key"
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put("/api/config", json={"server": {"port": 9457}})
+            assert response.status_code == 200
+    assert (routelet_home / "calls.db").is_file()
+    assert load_config(routelet_home / "config.toml").server.port == 9457
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert cli.run([]) == 0
+    assert startup[1].config.port == 9457
+    assert list(elsewhere.iterdir()) == []
+    assert (tmp_path / "config.toml").read_text(encoding="utf-8") == "invalid ["
+    assert not (tmp_path / "calls.db").exists()
+
+
+async def test_app_factory_uses_the_shared_config_path(routelet_home):
+    config = load_startup_config(
+        str(routelet_home / "config.toml"), env_file="", no_env_file=True
+    )
+    app = create_app(config, CallStore())
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.put("/api/config", json={"server": {"port": 9458}})
+            assert response.status_code == 200
+    assert load_config(routelet_home / "config.toml").server.port == 9458
+
+
+@pytest.mark.parametrize("use_tilde", [False, True])
+async def test_explicit_paths_override_defaults(
+    startup, routelet_home, tmp_path, monkeypatch, use_tilde
+):
+    key = "ROUTELET_TEST_EXPLICIT_KEY"
+    monkeypatch.delenv(key, raising=False)
+    base = routelet_home.parent if use_tilde else tmp_path
+    prefix = "~/" if use_tilde else ""
+    (base / "custom.env").write_text(f"{key}=custom-key\n", encoding="utf-8")
+    (base / "custom.toml").write_text(
+        '[providers.test]\ntype = "anthropic"\n'
+        f'api_key = "${{{key}}}"\nbase_url = "https://example.test"\n',
+        encoding="utf-8",
+    )
+    assert (
+        cli.run(
+            [
+                "-c",
+                f"{prefix}custom.toml",
+                "--db",
+                f"{prefix}data/custom.db",
+                "--env-file",
+                f"{prefix}custom.env",
+            ]
+        )
+        == 0
+    )
+    app = startup[0].config.app
+    assert app.state.router_engine.config.providers["test"].api_key == "custom-key"
+    async with app.router.lifespan_context(app):
+        assert (base / "data" / "custom.db").is_file()
+    assert not routelet_home.exists()
 
 
 def test_env_file_is_loaded_and_can_be_disabled(monkeypatch, tmp_path):
@@ -135,11 +235,16 @@ def test_removed_subcommands_are_rejected(command, startup, capsys):
     assert "Traceback" not in capsys.readouterr().err
 
 
-def test_help_and_version_do_not_start_service(startup, capsys):
+def test_help_and_version_do_not_start_service(startup, routelet_home, capsys):
     assert cli.run(["--help"]) == 0
-    assert "--no-browser" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "--no-browser" in output
+    assert "~/.routelet/config.toml" in output
+    assert "~/.routelet/calls.db" in output
+    assert "~/.routelet/.env" in output
     assert cli.run(["--version"]) == 0
     assert not startup
+    assert not routelet_home.exists()
 
 
 @pytest.mark.parametrize("module", ["routelet.main", "routelet.cli"])

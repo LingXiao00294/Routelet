@@ -5,6 +5,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from routelet.config import AppConfig, has_unresolved_env_var, load_config
+from routelet.paths import prepare_state_file, private_file_opener
 
 
 _INITIAL_CONFIG = """# 在 Dashboard 中添加 Provider 和虚拟模型。
@@ -23,12 +24,15 @@ def load_startup_config(
 ) -> AppConfig:
     """Create an empty first-run config without overwriting existing files."""
     if not no_env_file and env_file:
-        load_dotenv(env_file)
-    path = Path(config_path)
+        env_path = Path(env_file).expanduser()
+        if env_path.is_file():
+            prepare_state_file(env_path)
+        load_dotenv(env_path)
+    path = Path(config_path).expanduser()
+    prepare_state_file(path)
     if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            with path.open("x", encoding="utf-8") as file:
+            with open(path, "x", encoding="utf-8", opener=private_file_opener) as file:
                 file.write(_INITIAL_CONFIG)
         except FileExistsError:
             pass

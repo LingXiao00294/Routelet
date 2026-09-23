@@ -12,6 +12,8 @@ from typing import Any, Required, TypedDict, Unpack
 import aiosqlite
 import structlog
 
+from routelet.paths import prepare_state_file, private_file_opener, resolve_path
+
 logger = structlog.get_logger(__name__)
 
 MAX_PERSISTED_BODY_BYTES = 256 * 1024
@@ -191,8 +193,12 @@ class IncompatibleDatabaseError(RuntimeError):
 
 
 class CallStore:
-    def __init__(self, db_path: str = "calls.db") -> None:
-        self.db_path = Path(db_path)
+    def __init__(self, db_path: str | None = None) -> None:
+        self.db_path = (
+            Path(":memory:")
+            if db_path == ":memory:"
+            else resolve_path(db_path, "calls.db")
+        )
         self._conn: aiosqlite.Connection | None = None
 
     @property
@@ -214,8 +220,13 @@ class CallStore:
         if self._conn is not None:
             return
 
-        if self.db_path != Path(":memory:") and self.db_path.exists():
-            await self._validate_existing_schema()
+        if self.db_path != Path(":memory:"):
+            prepare_state_file(self.db_path)
+            if self.db_path.exists():
+                await self._validate_existing_schema()
+            # SQLite otherwise creates the database using the process umask.
+            with open(self.db_path, "ab", opener=private_file_opener):
+                pass
 
         conn = await aiosqlite.connect(str(self.db_path), factory=_MetricsConnection)
         try:

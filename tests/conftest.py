@@ -16,6 +16,16 @@ def _vm(*providers: ProviderConfig) -> VirtualModelConfig:
     return VirtualModelConfig(providers=list(providers))
 
 
+@pytest.fixture(autouse=True)
+def routelet_home(monkeypatch, tmp_path):
+    """Keep every test's default state away from the real user profile."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home / ".routelet"
+
+
 @pytest.fixture
 def sample_config() -> AppConfig:
     return AppConfig(
