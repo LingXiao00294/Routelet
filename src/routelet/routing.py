@@ -68,21 +68,6 @@ def _provider_pricing_snapshot(provider_cfg: ProviderConfig) -> dict[str, float 
     }
 
 
-def _check_stream_error(buffer: bytes) -> None:
-    """Check SSE buffer for error events and raise appropriate exception.
-
-    This detects errors in streaming responses that return HTTP 200 but
-    contain error events in the stream (like rate limit exceeded).
-    """
-    decoder = SSEDecoder()
-    try:
-        events = decoder.feed(buffer)
-    except SSEDecodeError as exc:
-        raise NonRetryableError(f"Invalid SSE stream: {exc}") from exc
-    for event in events:
-        _raise_for_stream_error(event)
-
-
 def _raise_for_stream_error(event: SSEEvent) -> None:
     """Raise the routing error represented by a decoded SSE error event."""
     if event.event != "error":
