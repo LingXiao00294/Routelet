@@ -1005,7 +1005,9 @@ class TestMessages:
         assert call["input_price_per_million"] == 2.0
         assert call["cost_usd"] == pytest.approx(0.000002)
 
-    @pytest.mark.parametrize("upstream_body", [b"[]", b'"hello"', b"42"])
+    @pytest.mark.parametrize(
+        "upstream_body", [b"[]", b'"hello"', b"42", b"true", b"null"]
+    )
     async def test_non_object_upstream_json_has_one_error_record(
         self, app_config, store, recorder, upstream_body
     ):
@@ -1034,6 +1036,7 @@ class TestMessages:
         assert call["error_type"] == "ValueError"
         assert call["attempt"] == 1
         assert call["provider_name"] == "anthropic"
+        assert call["cost_usd"] == 0.0
 
     @pytest.mark.parametrize(
         ("content", "message"),

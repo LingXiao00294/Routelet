@@ -302,7 +302,8 @@ def create_app(
         # routing 层会 fallback 到新 uuid 而与 http.request 日志断链。
         request_id = get_contextvars().get("request_id")
         engine: Router = request.app.state.router_engine
-        result: Any = None
+        no_result = object()
+        result: Any = no_result
 
         try:
             if is_stream:
@@ -540,7 +541,7 @@ def create_app(
                 cache_write_tokens=usage.get("cache_creation_input_tokens"),
                 **_price_snapshot_kwargs(outcome),
                 cost_usd=_calculate_cost_usd(usage, outcome)
-                if result is not None
+                if result is not no_result
                 else None,
                 failover_details=_failover_details(outcome),
             )
