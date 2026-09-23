@@ -844,14 +844,11 @@ class Router:
             errors=errors,
         )
         if errors and all(e.get("rate_limited") or e.get("capacity") for e in errors):
-            if any(e.get("capacity") for e in errors) and not any(
-                e.get("rate_limited") for e in errors
-            ):
-                kind: Literal["capacity", "rate_limit"] = "capacity"
-            elif any(e.get("rate_limited") for e in errors):
-                kind = "rate_limit"
-            else:
-                kind = "capacity"
+            kind: Literal["capacity", "rate_limit"] = (
+                "rate_limit"
+                if any(e.get("rate_limited") for e in errors)
+                else "capacity"
+            )
             return NoProviderAvailableError(
                 virtual_model,
                 errors,
