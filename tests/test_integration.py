@@ -836,6 +836,9 @@ class TestCostCalculation:
         assert call["cache_read_price_per_million"] is None
         assert call["cache_write_price_per_million"] is None
         assert call["cost_usd"] is None
+        failures = json.loads(call["failover_details"])
+        assert len(failures) == 2
+        assert all(isinstance(item["latency_ms"], int) for item in failures)
 
 
 class TestPrefetchHelpers:
@@ -965,6 +968,75 @@ class TestMessages:
         assert resp.status_code == 400
         data = resp.json()
         assert "error" in data
+
+    async def test_unrenderable_upstream_json_has_one_error_record(
+        self, app_config, store, recorder
+    ):
+        """A failed response render must not enqueue a success first."""
+        app_config.router.mode = "failover"
+        app_config.models["test-router"].providers[0].input_price_per_million = 2.0
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=b'{"usage":{"input_tokens":1},"metadata":NaN}',
+                headers={"content-type": "application/json"},
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            app.state.router_engine = Router(app_config, upstream)
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages", json={"model": "test-router", "messages": []}
+                )
+
+        assert response.status_code == 502
+        await recorder.wait_idle(timeout=1)
+        call = await _only_call_detail(store)
+        assert call["status"] == "error"
+        assert call["error_type"] == "ValueError"
+        assert call["attempt"] == 1
+        assert call["provider_name"] == "anthropic"
+        assert call["provider_model"] == "claude-haiku-4-5-20251001"
+        assert call["provider_url"] == "https://api.anthropic.com"
+        assert call["input_tokens"] == 1
+        assert call["input_price_per_million"] == 2.0
+        assert call["cost_usd"] == pytest.approx(0.000002)
+
+    @pytest.mark.parametrize(
+        "upstream_body", [b"[]", b'"hello"', b"42", b"true", b"null"]
+    )
+    async def test_non_object_upstream_json_has_one_error_record(
+        self, app_config, store, recorder, upstream_body
+    ):
+        app_config.router.mode = "failover"
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                content=upstream_body,
+                headers={"content-type": "application/json"},
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as upstream:
+            app = create_app(app_config, store, call_recorder=recorder)
+            app.state.router_engine = Router(app_config, upstream)
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as api_client:
+                response = await api_client.post(
+                    "/v1/messages", json={"model": "test-router", "messages": []}
+                )
+
+        assert response.status_code == 502
+        await recorder.wait_idle(timeout=1)
+        call = await _only_call_detail(store)
+        assert call["status"] == "error"
+        assert call["error_type"] == "ValueError"
+        assert call["attempt"] == 1
+        assert call["provider_name"] == "anthropic"
+        assert call["cost_usd"] == 0.0
 
     @pytest.mark.parametrize(
         ("content", "message"),
@@ -1268,13 +1340,12 @@ class TestMessages:
         assert call["provider_model"] is None
         assert call["attempt"] == 1
         assert call["request_tokens"] is None
-        assert json.loads(call["failover_details"]) == [
-            {
-                "provider": "anthropic",
-                "model": "claude-haiku-4-5-20251001",
-                "error": call["error_message"],
-            }
-        ]
+        failures = json.loads(call["failover_details"])
+        assert len(failures) == 1
+        assert failures[0]["provider"] == "anthropic"
+        assert failures[0]["model"] == "claude-haiku-4-5-20251001"
+        assert failures[0]["error"] == call["error_message"]
+        assert isinstance(failures[0]["latency_ms"], int)
 
     async def test_forwards_anthropic_feature_headers(
         self, app_config, store, recorder
