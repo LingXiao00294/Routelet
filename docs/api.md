@@ -13,7 +13,7 @@
 | `POST` | `/v1/messages` | 聊天接口，支持 `stream: true/false` |
 | `GET` | `/api/metrics/summary` | 调用概览统计 |
 | `GET` | `/api/metrics/by-model` | 按虚拟模型分组统计 |
-| `GET` | `/api/metrics/by-provider` | 按 Provider 名称分组统计，未关联 Provider 的调用归为 `unknown` |
+| `GET` | `/api/metrics/by-provider` | 按 Provider 名称分组统计，未关联 Provider 的调用返回 `provider: null` |
 | `GET` | `/api/metrics/by-real-model` | 按 Provider + 真实模型复合分组统计，返回独立 `provider`、`model` 字段 |
 | `GET` | `/api/metrics/daily?days=30` | 每日调用趋势 |
 | `GET` | `/api/calls?page=1&size=50` | 分页查询调用摘要（不含请求/响应正文与故障转移明细）；可用 `provider`、`provider_model` 组合筛选真实模型 |

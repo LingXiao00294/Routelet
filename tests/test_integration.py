@@ -1903,6 +1903,12 @@ class TestRecordCall:
             provider_name="provider-b",
             provider_type="anthropic",
         )
+        await store.record(
+            virtual_model="router",
+            status="success",
+            provider_name="unknown",
+            provider_type="anthropic",
+        )
         await store.record(virtual_model="router", status="error")
 
         response = await client.get("/api/metrics/by-provider")
@@ -1914,7 +1920,8 @@ class TestRecordCall:
         } == {
             "provider-a": (2, 1),
             "provider-b": (1, 1),
-            "unknown": (1, 0),
+            "unknown": (1, 1),
+            None: (1, 0),
         }
 
     async def test_real_model_metrics_group_by_provider_and_model(self, store, client):
