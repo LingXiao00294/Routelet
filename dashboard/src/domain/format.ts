@@ -42,22 +42,17 @@ export const latency = (value?: number | null): string =>
     : value < 1000
       ? Math.round(value) + " ms"
       : (value / 1000).toFixed(2) + " s";
-export function dateTime(value: string, timeOnly = false): string {
+export function dateTime(value: string): string {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return "—";
-  return date.toLocaleString(
-    "zh-CN",
-    timeOnly
-      ? { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }
-      : {
-          month: "2-digit",
-          day: "2-digit",
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-          hour12: false,
-        },
-  );
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
 }
 export function prettyJson(value?: string | null): string {
   if (value == null || value === "") return "没有记录正文";
