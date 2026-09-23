@@ -13,12 +13,12 @@ from routelet.config import (
     ServerConfig,
     VirtualModelConfig,
 )
+from routelet.circuit_breaker import CircuitState
 from routelet.routing import (
     Router,
     UnknownModelError,
     AllProvidersFailedError,
     NoProviderAvailableError,
-    _check_stream_error,
 )
 from routelet.providers.base import (
     NonRetryableError,
@@ -312,63 +312,65 @@ def _sse_error_buffer(error_type: str, message: str) -> bytes:
     return f"event: error\ndata: {data}\n\n".encode()
 
 
-class TestCheckStreamError:
-    def test_no_error_event(self):
-        """Normal SSE data should not raise."""
-        buf = b'event: message_start\ndata: {"message": {}}\n\n'
-        _check_stream_error(buf)  # should not raise
-
-    def test_auth_error_raises_retryable_with_immediate_break(self):
-        """Auth errors should raise RetryableError with immediate_break=True."""
-        buf = _sse_error_buffer("authentication_error", "Invalid API key")
-        with pytest.raises(RetryableError, match="authentication_error") as exc_info:
-            _check_stream_error(buf)
-        assert exc_info.value.immediate_break is True
-
-    def test_permission_error_raises_retryable_with_immediate_break(self):
-        buf = _sse_error_buffer("permission_error", "Access denied")
-        with pytest.raises(RetryableError, match="permission_error") as exc_info:
-            _check_stream_error(buf)
-        assert exc_info.value.immediate_break is True
-
-    def test_rate_limit_error_raises_retryable(self):
-        buf = _sse_error_buffer("rate_limit_error", "Too many requests")
-        with pytest.raises(RetryableError, match="rate_limit_error") as exc_info:
-            _check_stream_error(buf)
-        assert exc_info.value.immediate_break is False
-        assert exc_info.value.rate_limited is True
-
-    def test_overloaded_error_raises_retryable(self):
-        buf = _sse_error_buffer("overloaded_error", "Server busy")
-        with pytest.raises(RetryableError, match="overloaded_error") as exc_info:
-            _check_stream_error(buf)
-        assert exc_info.value.rate_limited is True
-
-    def test_unknown_error_type_raises_non_retryable(self):
-        """Unknown error types should raise NonRetryableError."""
-        buf = _sse_error_buffer("some_new_error", "Something weird")
-        with pytest.raises(NonRetryableError, match="some_new_error"):
-            _check_stream_error(buf)
-
-    def test_malformed_json_raises_non_retryable(self):
-        """Malformed JSON in error event should raise NonRetryableError."""
-        buf = b"event: error\ndata: {broken json}\n\n"
-        with pytest.raises(NonRetryableError, match="Stream error"):
-            _check_stream_error(buf)
-
-    def test_partial_buffer_no_match(self):
-        """Incomplete SSE event should not raise."""
-        buf = b'event: error\ndata: {"type":'
-        _check_stream_error(buf)  # should not raise
-
-    def test_error_in_later_chunk(self):
-        """Error event appearing after normal data should still be detected."""
-        buf = (
-            b'event: message_start\ndata: {"message": {}}\n\n'
-            b'event: error\ndata: {"type": "error", "error": {"type": "api_error", "message": "fail"}}\n\n'
+@pytest.mark.parametrize(
+    ("error_type", "message", "rate_limited", "immediate_break"),
+    [
+        ("authentication_error", "Invalid API key", False, True),
+        ("permission_error", "Access denied", False, True),
+        ("rate_limit_error", "Too many requests", True, False),
+        ("overloaded_error", "Server busy", True, False),
+    ],
+)
+async def test_stream_error_classification_updates_provider_state(
+    error_type, message, rate_limited, immediate_break
+):
+    """Route a real stream error through classification and provider accounting."""
+    response = _sse_error_buffer(error_type, message)
+    config = _reload_race_config(
+        base_url="https://p1.test", api_key="key", model="model"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=response)
         )
-        with pytest.raises(RetryableError, match="api_error"):
-            _check_stream_error(buf)
+    ) as client:
+        router = Router(config, client)
+        expected_error = (
+            NoProviderAvailableError if rate_limited else AllProvidersFailedError
+        )
+        with pytest.raises(expected_error) as exc_info:
+            async for _ in router.route_stream({"model": "m", "messages": []}):
+                pytest.fail("An upstream error event reached the client")
+
+        assert error_type in exc_info.value.errors[0]["error"]
+        assert exc_info.value.errors[0]["rate_limited"] is rate_limited
+        assert router.provider_gate.is_in_cooldown("p1") is rate_limited
+        assert await router.circuit_breaker.state("p1") is (
+            CircuitState.OPEN if immediate_break else CircuitState.CLOSED
+        )
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (_sse_error_buffer("some_new_error", "Something weird"), "some_new_error"),
+        (b"event: error\ndata: {broken json}\n\n", "Stream error"),
+        (b'event: error\ndata: {"type":', "Invalid SSE stream"),
+    ],
+)
+async def test_invalid_stream_error_rejected_by_routing(response, message):
+    config = _reload_race_config(
+        base_url="https://p1.test", api_key="key", model="model"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, content=response)
+        )
+    ) as client:
+        router = Router(config, client)
+        with pytest.raises(NonRetryableError, match=message):
+            async for _ in router.route_stream({"model": "m", "messages": []}):
+                pytest.fail("An invalid upstream error event reached the client")
 
 
 class TestRateLimitRouting:
