@@ -7,6 +7,30 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+export function responseError(response: Response, text: string): ApiError {
+  let body: unknown;
+  try {
+    body = text ? JSON.parse(text) : null;
+  } catch {
+    return new ApiError(
+      "服务返回了无法解析的响应（HTTP " + response.status + "）",
+      response.status,
+    );
+  }
+  const obj = body as {
+    detail?: unknown;
+    error?: { message?: string };
+  } | null;
+  const detail = obj?.detail ?? obj?.error?.message;
+  return new ApiError(
+    typeof detail === "string"
+      ? detail
+      : detail
+        ? JSON.stringify(detail)
+        : "请求失败（HTTP " + response.status + "）",
+    response.status,
+  );
+}
 export async function request<T>(
   path: string,
   init: RequestInit = {},
@@ -31,27 +55,13 @@ export async function request<T>(
       },
     });
     const text = await response.text();
+    if (!response.ok) throw responseError(response, text);
     let body: unknown;
     try {
       body = text ? JSON.parse(text) : null;
     } catch {
       throw new ApiError(
         "服务返回了无法解析的响应（HTTP " + response.status + "）",
-        response.status,
-      );
-    }
-    if (!response.ok) {
-      const obj = body as {
-        detail?: unknown;
-        error?: { message?: string };
-      } | null;
-      const detail = obj?.detail ?? obj?.error?.message;
-      throw new ApiError(
-        typeof detail === "string"
-          ? detail
-          : detail
-            ? JSON.stringify(detail)
-            : "请求失败（HTTP " + response.status + "）",
         response.status,
       );
     }
