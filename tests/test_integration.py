@@ -1884,6 +1884,39 @@ class TestRecordCall:
         _, total = await store.list_calls(model="b")
         assert total == 1
 
+    async def test_provider_metrics_group_by_name(self, store, client):
+        await store.record(
+            virtual_model="router",
+            status="success",
+            provider_name="provider-a",
+            provider_type="anthropic",
+        )
+        await store.record(
+            virtual_model="router",
+            status="error",
+            provider_name="provider-a",
+            provider_type="anthropic",
+        )
+        await store.record(
+            virtual_model="router",
+            status="success",
+            provider_name="provider-b",
+            provider_type="anthropic",
+        )
+        await store.record(virtual_model="router", status="error")
+
+        response = await client.get("/api/metrics/by-provider")
+
+        assert response.status_code == 200
+        assert {
+            row["provider"]: (row["count"], row["success_count"])
+            for row in response.json()
+        } == {
+            "provider-a": (2, 1),
+            "provider-b": (1, 1),
+            "unknown": (1, 0),
+        }
+
     async def test_real_model_metrics_group_by_provider_and_model(self, store, client):
         await store.record(
             virtual_model="router-a",
