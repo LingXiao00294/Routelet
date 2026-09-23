@@ -10,11 +10,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException
 
 from routelet.config import AppConfig, ConfigError, has_unresolved_env_var
 from routelet.config import parse_config_data
 from routelet.paths import prepare_state_file, restrict_file_permissions
+
+logger = structlog.get_logger(__name__)
 
 
 class RuntimeReloadError(RuntimeError):
@@ -181,28 +184,10 @@ def _replace_file(path: Path, content: bytes) -> None:
             tmp_path.unlink(missing_ok=True)
 
 
-async def _update_config_transaction(
-    config_path: str,
-    body: dict[str, Any],
-    reload_config_fn: Callable[[AppConfig], Awaitable[None]] | None,
-) -> dict[str, str]:
-    """Validate, persist, and reload one configuration transaction.
-
-    The caller must serialize invocations that share ``config_path`` so the
-    runtime reload and any rollback remain ordered with the corresponding disk
-    replacement.
-
-    Args:
-        config_path: Configuration file updated by this transaction.
-        body: Candidate API payload, possibly containing masked key values.
-        reload_config_fn: Optional callback that applies the validated runtime.
-
-    Returns:
-        A success payload after removing references to deleted catalog entries.
-
-    Raises:
-        HTTPException: If validation, persistence, reload, or rollback fails.
-    """
+def _prepare_config_update(
+    config_path: str, body: dict[str, Any]
+) -> tuple[Path, bytes, AppConfig]:
+    """Validate and persist a candidate without blocking the event loop."""
     path = Path(config_path)
     existing = _read_config_raw(config_path)
     original_bytes = path.read_bytes()
@@ -223,12 +208,29 @@ async def _update_config_transaction(
     except OSError as exc:
         raise HTTPException(500, f"写入配置失败，旧配置保持不变: {exc}") from exc
 
+    return path, original_bytes, runtime_config
+
+
+async def _update_config_transaction(
+    config_path: str,
+    body: dict[str, Any],
+    reload_config_fn: Callable[[AppConfig], Awaitable[None]] | None,
+) -> dict[str, str]:
+    """Persist, reload, and roll back one serialized configuration transaction.
+
+    The caller must hold the update lock across the worker-thread file operations
+    and the runtime reload so reads and overlapping writes see one transaction.
+    """
+    path, original_bytes, runtime_config = await asyncio.to_thread(
+        _prepare_config_update, config_path, body
+    )
+
     if reload_config_fn is not None:
         try:
             await reload_config_fn(runtime_config)
         except Exception as exc:
             try:
-                _replace_file(path, original_bytes)
+                await asyncio.to_thread(_replace_file, path, original_bytes)
             except OSError as rollback_exc:
                 raise HTTPException(
                     500,
@@ -360,29 +362,50 @@ def create_config_router(
     async def get_config():
         """返回完整规范配置，并对 api_key 脱敏。"""
         async with update_lock:
-            return _read_safe_config(config_path)
+            return await asyncio.to_thread(_read_safe_config, config_path)
 
     @router.get("/api/config/providers")
     async def list_providers():
         """返回包含实际模型目录的 Provider 配置，并对 api_key 脱敏。"""
         async with update_lock:
-            raw = _read_safe_config(config_path)
+            raw = await asyncio.to_thread(_read_safe_config, config_path)
             return raw.get("providers", {})
 
     @router.get("/api/config/models")
     async def list_models():
         """返回有序 ModelRef 与单一结构化 pinned_model。"""
         async with update_lock:
-            return _read_config_raw(config_path).get("models", {})
+            raw = await asyncio.to_thread(_read_config_raw, config_path)
+            return raw.get("models", {})
 
     @router.put("/api/config")
     async def update_config(body: dict[str, Any]):
         """Serialize config writes so disk, runtime, and rollback stay ordered."""
         async with update_lock:
-            return await _update_config_transaction(
-                config_path,
-                body,
-                reload_config_fn,
+            transaction = asyncio.create_task(
+                _update_config_transaction(config_path, body, reload_config_fn)
             )
+            cancelled = False
+            while not transaction.done():
+                try:
+                    await asyncio.shield(transaction)
+                except asyncio.CancelledError:
+                    # A worker thread cannot be stopped. Finish its reload or
+                    # rollback before releasing the lock to the next request.
+                    cancelled = True
+                except Exception:
+                    break
+            if cancelled:
+                try:
+                    transaction.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error(
+                        "config.update_failed_after_cancel",
+                        error_type=type(exc).__name__,
+                    )
+                raise asyncio.CancelledError
+            return transaction.result()
 
     return router
