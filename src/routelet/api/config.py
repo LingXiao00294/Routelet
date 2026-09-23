@@ -10,11 +10,14 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, HTTPException
 
 from routelet.config import AppConfig, ConfigError, has_unresolved_env_var
 from routelet.config import parse_config_data
 from routelet.paths import prepare_state_file, restrict_file_permissions
+
+logger = structlog.get_logger(__name__)
 
 
 class RuntimeReloadError(RuntimeError):
@@ -383,18 +386,26 @@ def create_config_router(
                 _update_config_transaction(config_path, body, reload_config_fn)
             )
             cancelled = False
-            while True:
+            while not transaction.done():
                 try:
-                    result = await asyncio.shield(transaction)
-                    break
+                    await asyncio.shield(transaction)
                 except asyncio.CancelledError:
-                    if transaction.done():
-                        raise
                     # A worker thread cannot be stopped. Finish its reload or
                     # rollback before releasing the lock to the next request.
                     cancelled = True
+                except Exception:
+                    break
             if cancelled:
+                try:
+                    transaction.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception as exc:
+                    logger.error(
+                        "config.update_failed_after_cancel",
+                        error_type=type(exc).__name__,
+                    )
                 raise asyncio.CancelledError
-            return result
+            return transaction.result()
 
     return router

@@ -608,8 +608,9 @@ class TestConfigApi:
         assert len(write_threads) == 2
         assert all(thread != loop_thread for thread in write_threads)
 
+    @pytest.mark.parametrize("write_fails", [False, True])
     async def test_cancelled_config_write_finishes_before_next_read(
-        self, tmp_path, store, monkeypatch
+        self, tmp_path, store, monkeypatch, write_fails
     ):
         path = _write_config(tmp_path)
         app, client = await self._client(path, store)
@@ -620,6 +621,8 @@ class TestConfigApi:
         def blocked_replace(file_path, content):
             write_started.set()
             assert release_write.wait(timeout=2)
+            if write_fails:
+                raise OSError("disk full")
             return original_replace(file_path, content)
 
         monkeypatch.setattr(config_api, "_replace_file", blocked_replace)
@@ -644,8 +647,9 @@ class TestConfigApi:
             response = await following_read
 
         assert response.status_code == 200
-        assert response.json()["server"]["port"] == 9457
-        assert app.state.router_engine.config.server.port == 9457
+        expected_port = 9456 if write_fails else 9457
+        assert response.json()["server"]["port"] == expected_port
+        assert app.state.router_engine.config.server.port == expected_port
 
     def test_toml_serializer_escapes_all_control_characters(self):
         raw = _raw_config()
