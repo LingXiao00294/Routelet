@@ -5,6 +5,7 @@ import { useWorkspace } from "../state/workspace";
 import { navigation } from "../domain/navigation";
 import Modal from "./Modal.vue";
 import Icon from "./Icon.vue";
+import SearchInput from "./SearchInput.vue";
 const emit = defineEmits<{ close: [] }>();
 const router = useRouter(),
   workspace = useWorkspace();
@@ -58,15 +59,14 @@ function keydown(event: KeyboardEvent) {
 <template>
   <Modal title="快速前往" eyebrow="COMMAND CENTER" @close="$emit('close')"
     ><div @keydown="keydown">
-      <div class="search-input command-input">
-        <Icon name="search" /><input
-          v-model="query"
-          aria-label="搜索页面、Router 或 Provider"
-          placeholder="搜索页面、Router 或 Provider…"
-          autofocus
-          @input="selected = 0"
-        />
-      </div>
+      <SearchInput
+        v-model="query"
+        class="command-input"
+        label="搜索页面、Router 或 Provider"
+        placeholder="搜索页面、Router 或 Provider…"
+        autofocus
+        @update:model-value="selected = 0"
+      />
       <div class="command-results">
         <button
           v-for="(item, index) in items"

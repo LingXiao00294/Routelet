@@ -12,6 +12,7 @@ import EmptyState from "../ui/EmptyState.vue";
 import Modal from "../ui/Modal.vue";
 import ProviderEditor from "../ui/ProviderEditor.vue";
 import ModelEditor from "../ui/ModelEditor.vue";
+import SearchInput from "../ui/SearchInput.vue";
 const workspace = useWorkspace(),
   telemetry = useTelemetry();
 const query = useSearchQuery();
@@ -84,13 +85,12 @@ async function resetCircuit() {
     </button>
   </section>
   <div class="page-toolbar">
-    <div class="search-input">
-      <Icon name="search" :size="18" /><input
-        v-model="query"
-        aria-label="搜索 Provider 或模型"
-        placeholder="搜索 Provider、地址或模型…"
-      />
-    </div>
+    <SearchInput
+      v-model="query"
+      label="搜索 Provider 或模型"
+      placeholder="搜索 Provider、地址或模型…"
+      :size="18"
+    />
     <span class="muted"
       >{{ providers.length }} 个 Provider ·
       {{
