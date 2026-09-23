@@ -228,7 +228,7 @@ def create_app(
         logging_switched = False
         try:
             if logging_changed:
-                _apply_logging_config(new_config)
+                await asyncio.to_thread(_apply_logging_config, new_config)
                 logging_switched = True
             await app.state.router_engine.reload_config(new_config)
         except Exception as exc:
@@ -240,7 +240,7 @@ def create_app(
                     rollback_errors.append(f"Router: {rollback_exc}")
             if logging_switched:
                 try:
-                    _apply_logging_config(old_config)
+                    await asyncio.to_thread(_apply_logging_config, old_config)
                 except Exception as rollback_exc:
                     rollback_errors.append(f"logging: {rollback_exc}")
             if rollback_errors:

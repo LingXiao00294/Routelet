@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 import re
 from pathlib import Path
+import threading
 import tomllib
 from typing import Any
 
@@ -532,6 +533,119 @@ class TestConfigApi:
             "provider": "p2",
             "model": "shared",
         }
+
+    async def test_config_reads_writes_and_logging_run_off_event_loop(
+        self, tmp_path, store, monkeypatch
+    ):
+        path = _write_config(tmp_path)
+        _, client = await self._client(path, store)
+        loop_thread = threading.get_ident()
+        read_threads: list[int] = []
+        write_threads: list[int] = []
+        logging_threads: list[int] = []
+        original_read = config_api._read_config_raw
+        original_replace = config_api._replace_file
+
+        def tracked_read(config_path):
+            read_threads.append(threading.get_ident())
+            return original_read(config_path)
+
+        def tracked_replace(file_path, content):
+            write_threads.append(threading.get_ident())
+            return original_replace(file_path, content)
+
+        monkeypatch.setattr(config_api, "_read_config_raw", tracked_read)
+        monkeypatch.setattr(config_api, "_replace_file", tracked_replace)
+        monkeypatch.setattr(
+            app_module,
+            "reconfigure_logging",
+            lambda **kwargs: logging_threads.append(threading.get_ident()),
+        )
+        body = _raw_config()
+        body["server"]["log_level"] = "debug"
+
+        async with client:
+            responses = [
+                await client.get("/api/config"),
+                await client.get("/api/config/providers"),
+                await client.get("/api/config/models"),
+                await client.put("/api/config", json=body),
+            ]
+
+        assert all(response.status_code == 200 for response in responses)
+        assert len(read_threads) == 4
+        assert len(write_threads) == 1
+        assert len(logging_threads) == 1
+        assert all(thread != loop_thread for thread in read_threads)
+        assert all(thread != loop_thread for thread in write_threads)
+        assert all(thread != loop_thread for thread in logging_threads)
+
+    async def test_config_rollback_file_io_runs_off_event_loop(
+        self, tmp_path, store, monkeypatch
+    ):
+        path = _write_config(tmp_path)
+        original = path.read_bytes()
+        app, client = await self._client(path, store)
+        loop_thread = threading.get_ident()
+        write_threads: list[int] = []
+        original_replace = config_api._replace_file
+
+        def tracked_replace(file_path, content):
+            write_threads.append(threading.get_ident())
+            return original_replace(file_path, content)
+
+        async def fail_reload(config):
+            raise RuntimeError("reload failed")
+
+        monkeypatch.setattr(config_api, "_replace_file", tracked_replace)
+        monkeypatch.setattr(app.state.router_engine, "reload_config", fail_reload)
+
+        async with client:
+            response = await client.put("/api/config", json=_raw_config())
+
+        assert response.status_code == 500
+        assert path.read_bytes() == original
+        assert len(write_threads) == 2
+        assert all(thread != loop_thread for thread in write_threads)
+
+    async def test_cancelled_config_write_finishes_before_next_read(
+        self, tmp_path, store, monkeypatch
+    ):
+        path = _write_config(tmp_path)
+        app, client = await self._client(path, store)
+        write_started = threading.Event()
+        release_write = threading.Event()
+        original_replace = config_api._replace_file
+
+        def blocked_replace(file_path, content):
+            write_started.set()
+            assert release_write.wait(timeout=2)
+            return original_replace(file_path, content)
+
+        monkeypatch.setattr(config_api, "_replace_file", blocked_replace)
+        body = _raw_config()
+        body["server"]["port"] = 9457
+
+        async with client:
+            update = asyncio.create_task(client.put("/api/config", json=body))
+            try:
+                assert await asyncio.to_thread(write_started.wait, 1)
+                assert (await client.get("/health")).status_code == 200
+                assert not update.done()
+                update.cancel()
+                following_read = asyncio.create_task(client.get("/api/config"))
+                await asyncio.sleep(0.05)
+                assert not following_read.done()
+            finally:
+                release_write.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await update
+            response = await following_read
+
+        assert response.status_code == 200
+        assert response.json()["server"]["port"] == 9457
+        assert app.state.router_engine.config.server.port == 9457
 
     def test_toml_serializer_escapes_all_control_characters(self):
         raw = _raw_config()
