@@ -132,11 +132,10 @@ _INVALID_OPERATIONAL_CONFIG_CASES = (
 )
 
 
-@pytest.mark.parametrize("document", ["README.md", "docs/design.md"])
-def test_documented_config_loads_with_declared_environment_variables(document) -> None:
-    """Keep the documented config usable without a separate example file."""
+def test_documented_config_loads_with_declared_environment_variables() -> None:
+    """Keep the canonical documented config and env example in sync."""
     project_root = Path(__file__).resolve().parents[1]
-    text = (project_root / document).read_text(encoding="utf-8")
+    text = (project_root / "docs/configuration.md").read_text(encoding="utf-8")
     example = re.search(r"```toml\n(.*?)\n```", text, re.DOTALL)
     assert example is not None
     config_text = example.group(1)
