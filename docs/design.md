@@ -274,6 +274,7 @@ CREATE TABLE IF NOT EXISTS calls (
 CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_calls_model ON calls(virtual_model);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
+CREATE INDEX IF NOT EXISTS idx_calls_provider ON calls(provider_name, provider_model);
 ```
 
 **写入语义：**
