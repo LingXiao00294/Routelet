@@ -3,7 +3,7 @@ import { computed, ref } from "vue";
 import { useTelemetry } from "../state/telemetry";
 import { compact, count, money } from "../domain/format";
 import Modal from "./Modal.vue";
-import Icon from "./Icon.vue";
+import SearchInput from "./SearchInput.vue";
 const emit = defineEmits<{ close: [] }>();
 const telemetry = useTelemetry();
 const group = ref("virtual"),
@@ -60,13 +60,13 @@ const rows = computed(() => {
         <option value="cost">按费用排序</option>
       </select>
     </div>
-    <div class="search-input usage-search">
-      <Icon name="search" :size="17" /><input
-        v-model="query"
-        aria-label="筛选用量模型"
-        placeholder="搜索模型或 Provider…"
-      />
-    </div>
+    <SearchInput
+      v-model="query"
+      class="usage-search"
+      label="筛选用量模型"
+      placeholder="搜索模型或 Provider…"
+      :size="17"
+    />
     <div class="table-scroll">
       <table class="data-table">
         <thead>

@@ -8,6 +8,7 @@ import Icon from "../ui/Icon.vue";
 import EmptyState from "../ui/EmptyState.vue";
 import Modal from "../ui/Modal.vue";
 import RouteEditor from "../ui/RouteEditor.vue";
+import SearchInput from "../ui/SearchInput.vue";
 const workspace = useWorkspace();
 const query = useSearchQuery(),
   editing = ref<string | null>(null),
@@ -100,13 +101,12 @@ function remove() {
       </button>
     </div>
     <div class="page-toolbar">
-      <div class="search-input">
-        <Icon name="search" :size="18" /><input
-          v-model="query"
-          aria-label="搜索 Router"
-          placeholder="搜索 Router、模型或 Provider…"
-        />
-      </div>
+      <SearchInput
+        v-model="query"
+        label="搜索 Router"
+        placeholder="搜索 Router、模型或 Provider…"
+        :size="18"
+      />
       <span class="muted"
         >{{ routes.length }} 个 Router · {{ actualCount }} 个可选模型</span
       >
