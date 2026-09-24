@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -82,6 +83,34 @@ class TestCallRecorder:
         }
         with pytest.raises(ValueError, match="duration"):
             recorder.enable_body_recording(10)
+
+    async def test_body_recording_stops_after_wall_clock_expiry(
+        self, store, monkeypatch
+    ):
+        now = datetime(2026, 9, 24, tzinfo=timezone.utc)
+        monkeypatch.setattr("routelet.recording._utc_now", lambda: now)
+        recorder = CallRecorder(store)
+        await recorder.start()
+        try:
+            recorder.enable_body_recording(15)
+            now += timedelta(minutes=16)
+            assert recorder.submit(
+                virtual_model="private",
+                status="success",
+                request_body={"messages": [{"content": "secret prompt"}]},
+            )
+            await recorder.wait_idle(timeout=1)
+            assert recorder.body_recording_status() == {
+                "enabled": False,
+                "expires_at": None,
+            }
+        finally:
+            await recorder.close()
+
+        calls, _ = await store.list_calls()
+        detail = await store.get_call(calls[0]["id"])
+        assert detail is not None
+        assert detail["request_body"] is None
 
     async def test_writer_continues_after_store_failure(self, store, monkeypatch):
         recorded: list[str] = []

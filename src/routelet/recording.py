@@ -25,6 +25,10 @@ DEFAULT_SHUTDOWN_TIMEOUT = 5.0
 BODY_RECORDING_MINUTES = (15, 60, 240, 1440)
 
 
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 @dataclass(slots=True)
 class _QueuedCallRecord:
     payload: CallRecordPayload
@@ -58,19 +62,26 @@ class CallRecorder:
         self._active_record: _QueuedCallRecord | None = None
         self._accepting = False
         self._body_recording_deadline: float | None = None
-        self._body_recording_expires_at: str | None = None
+        self._body_recording_expires_at: datetime | None = None
         self._body_recording_timer: asyncio.TimerHandle | None = None
 
     def body_recording_status(self) -> dict[str, bool | str | None]:
         """Return the temporary body-capture state, expiring it if needed."""
-        if (
-            self._body_recording_deadline is not None
-            and time.monotonic() >= self._body_recording_deadline
+        if self._body_recording_deadline is not None and (
+            time.monotonic() >= self._body_recording_deadline
+            or (
+                self._body_recording_expires_at is not None
+                and _utc_now() >= self._body_recording_expires_at
+            )
         ):
             self.disable_body_recording()
         return {
             "enabled": self._body_recording_deadline is not None,
-            "expires_at": self._body_recording_expires_at,
+            "expires_at": (
+                self._body_recording_expires_at.isoformat()
+                if self._body_recording_expires_at is not None
+                else None
+            ),
         }
 
     def enable_body_recording(
@@ -81,14 +92,15 @@ class CallRecorder:
             raise ValueError("unsupported body recording duration")
         self.disable_body_recording()
         self._body_recording_deadline = time.monotonic() + duration_minutes * 60
-        self._body_recording_expires_at = (
-            datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
-        ).isoformat()
+        self._body_recording_expires_at = _utc_now() + timedelta(
+            minutes=duration_minutes
+        )
         self._body_recording_timer = asyncio.get_running_loop().call_later(
             duration_minutes * 60, self.disable_body_recording
         )
         logger.warning(
-            "call_record.body_enabled", expires_at=self._body_recording_expires_at
+            "call_record.body_enabled",
+            expires_at=self._body_recording_expires_at.isoformat(),
         )
         return self.body_recording_status()
 

@@ -23,18 +23,22 @@ const recordingExpiry = computed(() =>
     : "",
 );
 let recordingPoll: ReturnType<typeof setInterval> | undefined;
+let recordingRequestId = 0;
 async function loadRecording() {
+  const requestId = ++recordingRequestId;
   try {
-    recording.value = await request<BodyRecordingStatus>(
-      "/api/recording/bodies",
-    );
+    const status = await request<BodyRecordingStatus>("/api/recording/bodies");
+    if (requestId !== recordingRequestId || recordingBusy.value) return;
+    recording.value = status;
     recordingError.value = "";
   } catch (reason) {
+    if (requestId !== recordingRequestId || recordingBusy.value) return;
     recordingError.value = errorText(reason);
   }
 }
 async function enableRecording() {
   recordingBusy.value = true;
+  recordingRequestId++;
   try {
     recording.value = await request<BodyRecordingStatus>(
       "/api/recording/bodies",
@@ -49,11 +53,13 @@ async function enableRecording() {
   } catch (reason) {
     recordingError.value = errorText(reason);
   } finally {
+    recordingRequestId++;
     recordingBusy.value = false;
   }
 }
 async function disableRecording() {
   recordingBusy.value = true;
+  recordingRequestId++;
   try {
     recording.value = await request<BodyRecordingStatus>(
       "/api/recording/bodies",
@@ -66,6 +72,7 @@ async function disableRecording() {
   } catch (reason) {
     recordingError.value = errorText(reason);
   } finally {
+    recordingRequestId++;
     recordingBusy.value = false;
   }
 }
@@ -272,7 +279,7 @@ function exportConfig() {
           :disabled="recordingBusy"
           @click="confirmRecording = true"
         >
-          {{ recording?.enabled ? "延长记录时间" : "开启正文记录" }}
+          {{ recording?.enabled ? "重设记录期限" : "开启正文记录" }}
         </button>
         <button
           v-if="recording?.enabled"
@@ -287,7 +294,9 @@ function exportConfig() {
   </section>
   <Modal
     v-if="confirmRecording"
-    title="确认开启调用正文记录？"
+    :title="
+      recording?.enabled ? '确认重设记录期限？' : '确认开启调用正文记录？'
+    "
     :busy="recordingBusy"
     @close="confirmRecording = false"
   >
@@ -296,6 +305,9 @@ function exportConfig() {
       {{ recordingDuration }} 分钟会保存请求与响应正文，可能包含敏感内容。
       <strong>记录响应会显著增加数据库大小。</strong>
       到期或服务重启后自动关闭；已保存的正文不会自动清除。
+    </p>
+    <p v-if="recording?.enabled">
+      新期限从现在开始计算，可能早于当前的自动关闭时间。
     </p>
     <div v-if="recordingError" class="alert error" role="alert">
       {{ recordingError }}
@@ -313,7 +325,13 @@ function exportConfig() {
         :disabled="recordingBusy"
         @click="enableRecording"
       >
-        {{ recordingBusy ? "正在开启…" : "确认开启" }}
+        {{
+          recordingBusy
+            ? "正在保存…"
+            : recording?.enabled
+              ? "确认重设"
+              : "确认开启"
+        }}
       </button>
     </template>
   </Modal>
