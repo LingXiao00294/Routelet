@@ -22,6 +22,7 @@ export interface Provider {
   queue_wait_timeout: number;
   rate_limit_cooldown: number;
   models: Record<string, Price>;
+  model_order?: string[] | null;
 }
 export interface VirtualModel {
   models: ModelRef[];

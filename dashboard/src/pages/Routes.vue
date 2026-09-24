@@ -35,6 +35,10 @@ function setMode(mode: "sticky" | "failover") {
       if (!model.models.some((ref) => sameRef(ref, model.pinned_model)))
         model.pinned_model = clone(model.models[0] ?? null);
 }
+function pinModel(name: string, ref: { provider: string; model: string }) {
+  const route = workspace.draft?.models[name];
+  if (route) route.pinned_model = clone(ref);
+}
 function duplicate(name: string) {
   if (!workspace.draft) return;
   let next = name + "-copy",
@@ -161,7 +165,8 @@ function remove() {
               }}</span
               ><Icon name="arrow" :size="20" />
             </div>
-            <div
+            <button
+              type="button"
               class="chain-node"
               :class="{
                 pinned: sameRef(ref, model.pinned_model),
@@ -169,6 +174,20 @@ function remove() {
                   workspace.draft.router.mode === 'sticky' &&
                   !sameRef(ref, model.pinned_model),
               }"
+              :aria-label="
+                '将 ' +
+                ref.provider +
+                '/' +
+                ref.model +
+                ' 设为 ' +
+                name +
+                ' 的固定模型'
+              "
+              :aria-pressed="sameRef(ref, model.pinned_model)"
+              :title="
+                sameRef(ref, model.pinned_model) ? '已固定' : '点击设为固定模型'
+              "
+              @click="pinModel(name, ref)"
             >
               <div>
                 <span class="node-priority">{{
@@ -180,7 +199,7 @@ function remove() {
               </div>
               <strong :title="ref.model">{{ ref.model }}</strong
               ><small>{{ ref.provider }}</small>
-            </div></template
+            </button></template
           >
           <div class="chain-end"><Icon name="check" :size="16" /></div>
         </div>

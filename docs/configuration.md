@@ -95,6 +95,8 @@ Dashboard 对已有 Provider 留空 API Key 会保留旧值；新增 Provider �
 
 每个 `[providers.<name>]` 定义一组连接设置和实际模型目录。
 
+可选的 `model_order = ["model-a", "model-b"]` 指定 Dashboard 中实际模型的显示顺序，必须恰好列出该 Provider 目录中的每个模型一次。旧配置省略该字段时使用目录原有顺序；在 Dashboard 拖动模型后会写入该字段。此顺序不改变 Router 候选链的故障转移优先级。
+
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `type` | 必填 | 当前只接受 `"anthropic"` |

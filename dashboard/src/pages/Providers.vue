@@ -1,9 +1,14 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef } from "vue";
 import { useSearchQuery } from "../composables/useSearchQuery";
 import { useWorkspace } from "../state/workspace";
 import { useTelemetry } from "../state/telemetry";
-import { affectedRoutes, removeCatalogEntry } from "../domain/config";
+import {
+  affectedRoutes,
+  modelOrder,
+  moveModel,
+  removeCatalogEntry,
+} from "../domain/config";
 import { money } from "../domain/format";
 import { request, errorText } from "../services/http";
 import { notify } from "../state/notifications";
@@ -21,6 +26,166 @@ const modelEdit = ref<{ provider: string; model?: string } | null>(null);
 const removal = ref<{ provider: string; model?: string } | null>(null);
 const reset = ref(""),
   resetting = ref(false);
+const drag = shallowRef<{
+  provider: string;
+  model: string;
+  index: number;
+  pointerId: number;
+  handle: HTMLElement;
+  startX: number;
+  startY: number;
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+} | null>(null);
+const dragging = ref(false);
+const pointer = ref({ x: 0, y: 0 });
+const dropIndex = ref<number | null>(null);
+const announcement = ref("");
+const destination = computed(() =>
+  drag.value && dropIndex.value !== null
+    ? dropIndex.value > drag.value.index
+      ? dropIndex.value - 1
+      : dropIndex.value
+    : null,
+);
+const previewStyle = computed(() => {
+  const source = drag.value;
+  return source
+    ? {
+        left: `${source.left}px`,
+        top: `${source.top}px`,
+        width: `${source.width}px`,
+        minHeight: `${source.height}px`,
+        transform: `translate3d(${pointer.value.x - source.startX}px, ${pointer.value.y - source.startY}px, 0)`,
+      }
+    : {};
+});
+let scrollFrame = 0;
+function clearDrag() {
+  const source = drag.value;
+  drag.value = null;
+  dragging.value = false;
+  dropIndex.value = null;
+  cancelAnimationFrame(scrollFrame);
+  if (source?.handle.hasPointerCapture(source.pointerId))
+    source.handle.releasePointerCapture(source.pointerId);
+}
+function updateTarget() {
+  const source = drag.value;
+  const list = source?.handle.closest<HTMLElement>(".catalog-list");
+  if (!source || !list) return;
+  const bounds = list.getBoundingClientRect();
+  const { x, y } = pointer.value;
+  if (
+    x < bounds.left ||
+    x > bounds.right ||
+    y < bounds.top ||
+    y > bounds.bottom
+  ) {
+    dropIndex.value = null;
+    return;
+  }
+  const rows = Array.from(list.querySelectorAll<HTMLElement>(".catalog-row"));
+  const before = rows.findIndex((row) => {
+    const rect = row.getBoundingClientRect();
+    return y < rect.top + rect.height / 2;
+  });
+  const slot = before < 0 ? rows.length : before;
+  dropIndex.value =
+    (slot > source.index ? slot - 1 : slot) === source.index ? null : slot;
+}
+function autoScroll() {
+  if (!dragging.value) return;
+  const y = pointer.value.y;
+  const edge = 40;
+  const delta =
+    y < edge
+      ? -Math.min(12, (edge - y) / 3)
+      : y > window.innerHeight - edge
+        ? Math.min(12, (y - window.innerHeight + edge) / 3)
+        : 0;
+  if (delta) window.scrollBy(0, delta);
+  updateTarget();
+  scrollFrame = requestAnimationFrame(autoScroll);
+}
+function startDrag(
+  event: PointerEvent,
+  provider: string,
+  model: string,
+  index: number,
+) {
+  if (
+    event.button !== 0 ||
+    !event.isPrimary ||
+    !workspace.draft ||
+    modelOrder(workspace.draft.providers[provider]).length < 2
+  )
+    return;
+  clearDrag();
+  const handle = event.currentTarget as HTMLElement;
+  const row = handle.closest<HTMLElement>(".catalog-row")!;
+  const { left, top, width, height } = row.getBoundingClientRect();
+  handle.focus({ preventScroll: true });
+  handle.setPointerCapture(event.pointerId);
+  pointer.value = { x: event.clientX, y: event.clientY };
+  drag.value = {
+    provider,
+    model,
+    index,
+    pointerId: event.pointerId,
+    handle,
+    startX: event.clientX,
+    startY: event.clientY,
+    left,
+    top,
+    width,
+    height,
+  };
+}
+function moveDrag(event: PointerEvent) {
+  const source = drag.value;
+  if (!source || source.pointerId !== event.pointerId) return;
+  pointer.value = { x: event.clientX, y: event.clientY };
+  if (!dragging.value) {
+    if (
+      Math.hypot(event.clientX - source.startX, event.clientY - source.startY) <
+      6
+    )
+      return;
+    dragging.value = true;
+    scrollFrame = requestAnimationFrame(autoScroll);
+  }
+  event.preventDefault();
+  updateTarget();
+}
+function reorder(provider: string, from: number, to: number) {
+  const entry = workspace.draft?.providers[provider];
+  if (!entry || from === to || to < 0 || to >= modelOrder(entry).length) return;
+  const model = modelOrder(entry)[from];
+  moveModel(entry, from, to);
+  announcement.value = `${model} 已移到第 ${to + 1} 位`;
+}
+function finishDrag(event: PointerEvent) {
+  const source = drag.value;
+  if (!source || source.pointerId !== event.pointerId) return;
+  if (dragging.value) {
+    pointer.value = { x: event.clientX, y: event.clientY };
+    updateTarget();
+    if (destination.value !== null)
+      reorder(source.provider, source.index, destination.value);
+  }
+  clearDrag();
+}
+function cancelWithEscape(event: KeyboardEvent) {
+  if (!drag.value) return;
+  event.preventDefault();
+  event.stopPropagation();
+  clearDrag();
+  announcement.value = "已取消拖动，顺序未改变";
+}
+onBeforeUnmount(clearDrag);
 const providers = computed(() =>
   Object.entries(workspace.draft?.providers ?? {}).filter(([name, provider]) =>
     (
@@ -177,14 +342,60 @@ async function resetCircuit() {
             Object.keys(provider.models).length
           }}</span>
         </h3>
-        <span>输入 / 输出 · $ / 1M</span>
+        <div class="catalog-heading-actions">
+          <button class="text-link" @click="modelEdit = { provider: name }">
+            <Icon name="plus" :size="15" />添加模型
+          </button>
+          <span>输入 / 输出 · $ / 1M</span>
+        </div>
       </div>
-      <div v-if="Object.keys(provider.models).length" class="catalog-list">
+      <TransitionGroup
+        v-if="Object.keys(provider.models).length"
+        name="route-sort"
+        tag="div"
+        class="catalog-list"
+        @keydown.esc.capture="cancelWithEscape"
+      >
         <div
-          v-for="(prices, model) in provider.models"
+          v-for="(model, modelIndex) in modelOrder(provider)"
           :key="model"
           class="catalog-row"
+          :class="{
+            'is-dragging':
+              dragging && drag?.provider === name && drag.index === modelIndex,
+          }"
         >
+          <span
+            v-if="drag?.provider === name && dropIndex === modelIndex"
+            class="route-drop-indicator"
+            aria-hidden="true"
+            ><span>放到第 {{ destination! + 1 }} 位</span></span
+          >
+          <span
+            v-if="
+              drag?.provider === name &&
+              modelIndex === modelOrder(provider).length - 1 &&
+              dropIndex === modelOrder(provider).length
+            "
+            class="route-drop-indicator after"
+            aria-hidden="true"
+            ><span>放到第 {{ destination! + 1 }} 位</span></span
+          >
+          <button
+            class="route-drag-handle icon-button small"
+            :aria-label="'拖动排序 ' + name + '/' + model"
+            title="拖动排序，也可用上下方向键调整"
+            :disabled="modelOrder(provider).length < 2"
+            @pointerdown="startDrag($event, name, model, modelIndex)"
+            @pointermove="moveDrag"
+            @pointerup="finishDrag"
+            @pointercancel="clearDrag"
+            @lostpointercapture="clearDrag"
+            @keydown.up.prevent="reorder(name, modelIndex, modelIndex - 1)"
+            @keydown.down.prevent="reorder(name, modelIndex, modelIndex + 1)"
+          >
+            <Icon name="grip" :size="16" />
+          </button>
           <button
             class="catalog-model"
             @click="modelEdit = { provider: name, model: String(model) }"
@@ -193,8 +404,10 @@ async function resetCircuit() {
               model
             }}</span></button
           ><span class="catalog-price mono"
-            >{{ money(prices.input_price_per_million, 2) }} /
-            {{ money(prices.output_price_per_million, 2) }}</span
+            >{{ money(provider.models[model].input_price_per_million, 2) }} /
+            {{
+              money(provider.models[model].output_price_per_million, 2)
+            }}</span
           ><button
             class="icon-button small danger-hover"
             :aria-label="'删除实际模型 ' + model"
@@ -203,14 +416,12 @@ async function resetCircuit() {
             <Icon name="trash" :size="14" />
           </button>
         </div>
-      </div>
+      </TransitionGroup>
       <div v-else class="catalog-empty">
         还没有模型，登记后即可用于 Router。
       </div>
       <div class="provider-card-foot">
-        <button class="text-link" @click="modelEdit = { provider: name }">
-          <Icon name="plus" :size="15" />添加模型</button
-        ><span
+        <span
           >{{ affectedRoutes(workspace.draft!, name).length }} 个 Router
           引用</span
         ><button
@@ -231,6 +442,20 @@ async function resetCircuit() {
       <p>添加一个 Messages API 兼容 Provider</p>
     </button>
   </fieldset>
+  <p class="sr-only" role="status" aria-live="polite">{{ announcement }}</p>
+  <div
+    v-if="dragging && drag"
+    class="route-drag-preview catalog-drag-preview"
+    :style="previewStyle"
+    aria-hidden="true"
+  >
+    <Icon name="grip" :size="16" />
+    <Icon name="token" :size="16" />
+    <strong>{{ drag.model }}</strong>
+    <span class="badge neutral">{{
+      destination === null ? "拖动调整顺序" : `放到第 ${destination + 1} 位`
+    }}</span>
+  </div>
   <section v-if="workspace.draft && !providers.length" class="panel">
     <EmptyState
       icon="providers"

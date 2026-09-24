@@ -1665,19 +1665,43 @@ kbd {
   font-size: 12px;
   font-weight: 500;
 }
-.catalog-heading > span {
+.catalog-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.catalog-heading-actions > span {
   font-size: 11px;
   color: var(--muted);
+}
+.catalog-heading-actions .text-link {
+  white-space: nowrap;
 }
 .catalog-list {
   padding: 2px 17px 5px 23px;
 }
 .catalog-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 9px 0;
   border-bottom: 1px solid var(--line);
+}
+.catalog-row.is-dragging {
+  background: var(--soft);
+}
+.catalog-row.is-dragging > :not(.route-drop-indicator) {
+  opacity: 0.35;
+}
+.catalog-drag-preview {
+  padding: 9px 12px;
+}
+.catalog-drag-preview strong {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .catalog-row:last-child {
   border: 0;
@@ -1929,6 +1953,17 @@ kbd {
   width: 200px;
   min-width: 180px;
   box-shadow: var(--shadow);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+.chain-node:hover:not(:disabled),
+.chain-node:focus-visible {
+  border-color: var(--accent);
+}
+.chain-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 .chain-node.pinned {
   border-color: color-mix(in srgb, var(--accent) 50%, var(--line));

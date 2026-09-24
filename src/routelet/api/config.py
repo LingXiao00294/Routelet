@@ -101,6 +101,8 @@ def _toml_value(value: Any) -> str:
         return f'"{_toml_escape(value)}"'
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
         fields = ", ".join(
             f"{_toml_key(str(key))} = {_toml_value(item)}"

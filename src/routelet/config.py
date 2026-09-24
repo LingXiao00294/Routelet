@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 # 运行日志默认值（ServerConfig 与 monitoring.setup_logging 共用，避免多处字面量漂移）。
 DEFAULT_LOG_FILE = "logs/routelet.log"
@@ -143,6 +150,16 @@ class ProviderDef(_ProviderSettings):
     """Provider 连接设置及其实际模型目录。"""
 
     models: dict[str, ActualModelDef] = Field(default_factory=dict)
+    model_order: list[str] | None = None
+
+    @model_validator(mode="after")
+    def model_order_matches_catalog(self) -> ProviderDef:
+        if self.model_order is not None and (
+            len(self.model_order) != len(self.models)
+            or set(self.model_order) != set(self.models)
+        ):
+            raise ValueError("model_order 必须恰好列出每个实际模型一次")
+        return self
 
     @field_validator("api_key")
     @classmethod
@@ -379,7 +396,7 @@ def _provider_config_from_def(
     priority: int,
 ) -> ProviderConfig:
     return ProviderConfig(
-        **provider.model_dump(exclude={"models"}),
+        **provider.model_dump(exclude={"models", "model_order"}),
         name=name,
         model=model,
         priority=priority,

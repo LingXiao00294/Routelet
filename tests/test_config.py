@@ -251,7 +251,9 @@ class TestConfigDomainModel:
         )
 
         config = parse_config_data(raw)
-        saved_fields = config.providers["p1"].model_dump(exclude={"models"})
+        saved_fields = config.providers["p1"].model_dump(
+            exclude={"models", "model_order"}
+        )
         runtime = config.models["router"].providers[0]
         runtime_fields = runtime.model_dump()
 
@@ -277,6 +279,16 @@ class TestConfigDomainModel:
             1,
             2,
         ]
+
+    def test_provider_model_order_validates_exact_catalog(self):
+        raw = _raw_config()
+        raw["providers"]["p1"]["model_order"] = ["other", "shared"]
+        document = parse_config_data(raw)
+        assert document.providers["p1"].model_order == ["other", "shared"]
+
+        raw["providers"]["p1"]["model_order"] = ["shared", "shared"]
+        with pytest.raises(ConfigError, match="model_order"):
+            parse_config_data(raw)
 
     def test_multiple_virtual_models_can_share_actual_model(self):
         raw = _raw_config()
@@ -555,6 +567,22 @@ class TestConfigApi:
             "provider": "p2",
             "model": "shared",
         }
+
+    async def test_model_order_round_trips_numeric_names(self, tmp_path, store):
+        path = _write_config(tmp_path)
+        _, client = await self._client(path, store)
+        body = _raw_config()
+        body["providers"]["p1"]["models"].update({"1": {}, "2": {}})
+        body["providers"]["p1"]["model_order"] = ["2", "shared", "1", "other"]
+        async with client:
+            response = await client.put("/api/config", json=body)
+            saved = (await client.get("/api/config")).json()
+
+        assert response.status_code == 200, response.text
+        assert saved["providers"]["p1"]["model_order"] == ["2", "shared", "1", "other"]
+        assert tomllib.loads(path.read_text(encoding="utf-8"))["providers"]["p1"][
+            "model_order"
+        ] == ["2", "shared", "1", "other"]
 
     async def test_config_reads_writes_and_logging_run_off_event_loop(
         self, tmp_path, store, monkeypatch
