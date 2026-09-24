@@ -317,6 +317,20 @@ class CircuitBreaker:
             self._states.pop(provider, None)
             self._last_failure_time.pop(provider, None)
 
+    async def reset_all(self) -> None:
+        """Clear all circuit decisions and invalidate in-flight permits."""
+        async with self._lock:
+            for provider in (
+                set(self._generations)
+                | set(self._states)
+                | set(self._failure_counts)
+                | set(self._active_permits)
+            ):
+                self._advance_generation_locked(provider)
+            self._failure_counts.clear()
+            self._states.clear()
+            self._last_failure_time.clear()
+
     async def get_all_states(
         self, recovery_timeouts: Mapping[str, float] | None = None
     ) -> dict[str, CircuitState]:

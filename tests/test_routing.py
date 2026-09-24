@@ -499,6 +499,73 @@ class TestRateLimitRouting:
             assert attempted_hosts == ["p2.test"]
             assert outcome["attempt"] == 1
 
+    @pytest.mark.parametrize("stream", [False, True])
+    @pytest.mark.parametrize("status_code", [401, 500])
+    async def test_sticky_errors_do_not_open_circuit(self, stream, status_code):
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(status_code, text="upstream error")
+
+        config = _reload_race_config(
+            base_url="https://p1.test", api_key="key", model="model"
+        )
+        config.router = RouterConfig(mode="sticky", failure_threshold=1)
+        config.models["m"].pinned_model = ModelRef(provider="p1", model="model")
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            router = Router(config, client)
+            body = {"model": "m", "max_tokens": 10, "messages": []}
+            for _ in range(2):
+                with pytest.raises(UpstreamHTTPError):
+                    if stream:
+                        async for _ in router.route_stream(body):
+                            pass
+                    else:
+                        await router.route_non_stream(body)
+                assert await router.circuit_breaker.state("p1") == CircuitState.CLOSED
+        assert calls == 2
+
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_disabling_failover_clears_circuit_and_tries_pinned_model(
+        self, stream
+    ):
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            if stream:
+                return httpx.Response(
+                    200,
+                    content=b'event: message_start\ndata: {"type":"message_start"}\n\n',
+                )
+            return httpx.Response(200, json={"ok": True})
+
+        config = _reload_race_config(
+            base_url="https://p1.test", api_key="key", model="model"
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            router = Router(config, client)
+            await router.circuit_breaker.record_failure("p1", immediate=True)
+            assert await router.circuit_breaker.state("p1") == CircuitState.OPEN
+            sticky_config = config.model_copy(deep=True)
+            sticky_config.router.mode = "sticky"
+            sticky_config.models["m"].pinned_model = ModelRef(
+                provider="p1", model="model"
+            )
+            await router.reload_config(sticky_config)
+            assert await router.circuit_breaker.state("p1") == CircuitState.CLOSED
+            body = {"model": "m", "max_tokens": 10, "messages": []}
+            if stream:
+                assert b"message_start" in b"".join(
+                    [chunk async for chunk in router.route_stream(body)]
+                )
+            else:
+                assert await router.route_non_stream(body) == {"ok": True}
+            assert calls == 1
+
     async def test_sticky_rate_limit_preserves_response(self, http_client):
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(429, text="rl", headers={"Retry-After": "9"})

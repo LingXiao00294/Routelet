@@ -382,6 +382,17 @@ class TestCircuitBreakerUnit:
         assert replacement is not None
         await cb.release(replacement)
 
+    async def test_reset_all_invalidates_closed_in_flight_permit(self):
+        cb = CircuitBreaker(failure_threshold=1)
+        permit = await cb.try_acquire("p1")
+        assert permit is not None
+
+        await cb.reset_all()
+        await cb.record_failure("p1", immediate=True, permit=permit)
+
+        assert await cb.state("p1") == CircuitState.CLOSED
+        assert "p1" not in await cb.get_all_states()
+
 
 class TestCircuitBreakerRouterIntegration:
     """Test that circuit breaker filters providers in Router._get_providers."""

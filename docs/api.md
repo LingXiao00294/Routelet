@@ -77,7 +77,7 @@ SSE 支持流开头的 UTF-8 BOM，包括 BOM 字节跨数据块的情况；它�
 
 全局 `router.mode` 默认为 `sticky`，只调用每个 Router 的固定模型；`failover` 才会按有序候选进行故障转移。配置和面板开关见 [Router 字段](configuration.md#router-字段与故障转移)。
 
-关闭自动故障转移时，Provider HTTP 错误原样返回状态码和完整正文（包括非 JSON 正文），不再截断或改写为统一错误格式。保留 `Content-Type`、`Content-Language`、`Location`、`Retry-After`、`WWW-Authenticate`、请求 ID 和限流响应头；Provider 3xx 返回原始重定向目标，Router 不自动跟随。连接级响应头、Cookie 不透传，压缩正文解压后重新计算长度。流式请求依据实际开始调用的路由模式决定预取策略，固定模型模式等待 Provider 响应后才发送响应头，避免热重载期间提前返回 HTTP 200 掩盖 Provider 错误；Provider HTTP 200 流内的 SSE error 帧按原始字节返回一次，并记录为失败。网络超时、断连及本地熔断、冷却等没有 Provider 错误响应的情况，仍由 Router 生成错误；已发送响应头后发生的网络错误通过 SSE error 返回。
+关闭自动故障转移时，Provider HTTP 错误原样返回状态码和完整正文（包括非 JSON 正文），不再截断或改写为统一错误格式。保留 `Content-Type`、`Content-Language`、`Location`、`Retry-After`、`WWW-Authenticate`、请求 ID 和限流响应头；Provider 3xx 返回原始重定向目标，Router 不自动跟随。连接级响应头、Cookie 不透传，压缩正文解压后重新计算长度。流式请求依据实际开始调用的路由模式决定预取策略，固定模型模式等待 Provider 响应后才发送响应头，避免热重载期间提前返回 HTTP 200 掩盖 Provider 错误；Provider HTTP 200 流内的 SSE error 帧按原始字节返回一次，并记录为失败。固定模型模式不自动熔断；网络超时、断连及本地冷却等没有 Provider 错误响应的情况，仍由 Router 生成错误；已发送响应头后发生的网络错误通过 SSE error 返回。
 
 以下重试分类适用于 `failover` 模式，并且流式请求尚未交付首个有效事件：
 

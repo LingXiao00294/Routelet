@@ -134,7 +134,9 @@ class Router:
         self.provider_gate.configure_from_models(config.models)
 
     async def reload_config(self, new_config: AppConfig) -> None:
-        """热重载已校验配置，同时保留连接、熔断与冷却状态。"""
+        """热重载配置；关闭故障转移时清除熔断状态。"""
+        if self.config.router.mode == "failover" and new_config.router.mode == "sticky":
+            await self.circuit_breaker.reset_all()
         self._apply_config(new_config)
 
     def _apply_config(self, config: AppConfig) -> None:
@@ -197,6 +199,7 @@ class Router:
         permit: CircuitPermit | None,
         cooldown_generation: int | None,
         allow_failover: bool,
+        circuit_enabled: bool,
         passthrough_errors: bool = False,
     ) -> None:
         """Shared error handling for both route methods.
@@ -217,7 +220,7 @@ class Router:
                 else provider_cfg.rate_limit_cooldown,
                 generation=cooldown_generation,
             )
-        elif is_retryable:
+        elif is_retryable and circuit_enabled:
             await self.circuit_breaker.record_failure(
                 provider_cfg.name,
                 immediate=e.immediate_break,
@@ -485,22 +488,23 @@ class Router:
 
             try:
                 async with self.provider_gate.slot(provider_cfg) as cooldown_generation:
-                    permit = await self.circuit_breaker.try_acquire(
-                        provider_cfg.name,
-                        recovery_timeout=provider_cfg.recovery_timeout,
-                    )
-                    if permit is None:
-                        await self._record_circuit_skip(
-                            provider_cfg,
-                            request_id,
-                            p_start,
-                            errors,
-                            outcome,
-                            providers,
-                            i,
-                            allow_failover=allow_failover,
+                    if allow_failover:
+                        permit = await self.circuit_breaker.try_acquire(
+                            provider_cfg.name,
+                            recovery_timeout=provider_cfg.recovery_timeout,
                         )
-                        continue
+                        if permit is None:
+                            await self._record_circuit_skip(
+                                provider_cfg,
+                                request_id,
+                                p_start,
+                                errors,
+                                outcome,
+                                providers,
+                                i,
+                                allow_failover=allow_failover,
+                            )
+                            continue
 
                     self._ensure_config_generation(generation)
                     attempt = outcome["attempt"] + 1
@@ -512,17 +516,18 @@ class Router:
                         model=provider_cfg.model,
                         priority=provider_cfg.priority,
                         attempt=attempt,
-                        circuit_probe=permit.probe,
+                        circuit_probe=permit.probe if permit is not None else False,
                     )
                     provider = _create_provider(provider_cfg, self.http)
                     result = await provider.send(request_body)
                     p_latency = (time.time() - p_start) * 1000
                     total_latency = (time.time() - start_time) * 1000
 
-                    await self.circuit_breaker.record_success(
-                        provider_cfg.name,
-                        permit=permit,
-                    )
+                    if permit is not None:
+                        await self.circuit_breaker.record_success(
+                            provider_cfg.name,
+                            permit=permit,
+                        )
 
                     logger.info(
                         "provider.success",
@@ -572,6 +577,7 @@ class Router:
                         permit=permit,
                         cooldown_generation=cooldown_generation,
                         allow_failover=allow_failover,
+                        circuit_enabled=allow_failover,
                         passthrough_errors=not allow_failover,
                     )
                 except StickyRateLimited as srl:
@@ -668,22 +674,23 @@ class Router:
 
             try:
                 async with self.provider_gate.slot(provider_cfg) as cooldown_generation:
-                    permit = await self.circuit_breaker.try_acquire(
-                        provider_cfg.name,
-                        recovery_timeout=provider_cfg.recovery_timeout,
-                    )
-                    if permit is None:
-                        await self._record_circuit_skip(
-                            provider_cfg,
-                            request_id,
-                            p_start,
-                            errors,
-                            outcome,
-                            providers,
-                            i,
-                            allow_failover=allow_failover,
+                    if allow_failover:
+                        permit = await self.circuit_breaker.try_acquire(
+                            provider_cfg.name,
+                            recovery_timeout=provider_cfg.recovery_timeout,
                         )
-                        continue
+                        if permit is None:
+                            await self._record_circuit_skip(
+                                provider_cfg,
+                                request_id,
+                                p_start,
+                                errors,
+                                outcome,
+                                providers,
+                                i,
+                                allow_failover=allow_failover,
+                            )
+                            continue
 
                     self._ensure_config_generation(generation)
                     attempt = outcome["attempt"] + 1
@@ -695,7 +702,7 @@ class Router:
                         model=provider_cfg.model,
                         priority=provider_cfg.priority,
                         attempt=attempt,
-                        circuit_probe=permit.probe,
+                        circuit_probe=permit.probe if permit is not None else False,
                     )
                     provider = _create_provider(provider_cfg, self.http)
                     # 流可能在自然结束前因客户端断开而被关闭；候选一旦真正开始
@@ -742,10 +749,11 @@ class Router:
                     p_latency = (time.time() - p_start) * 1000
                     total_latency = (time.time() - start_time) * 1000
 
-                    await self.circuit_breaker.record_success(
-                        provider_cfg.name,
-                        permit=permit,
-                    )
+                    if permit is not None:
+                        await self.circuit_breaker.record_success(
+                            provider_cfg.name,
+                            permit=permit,
+                        )
 
                     logger.info(
                         "provider.success",
@@ -791,6 +799,7 @@ class Router:
                         permit=permit,
                         cooldown_generation=cooldown_generation,
                         allow_failover=can_failover,
+                        circuit_enabled=allow_failover,
                         passthrough_errors=not allow_failover,
                     )
                 except UpstreamSSEError as upstream_error:
@@ -898,21 +907,22 @@ class Router:
                 )
                 continue
 
-            circuit_state = await self.circuit_breaker.state(
-                p.name,
-                recovery_timeout=p.recovery_timeout,
-            )
-            if circuit_state == CircuitState.OPEN:
-                skipped.append(
-                    {
-                        "provider": p.name,
-                        "model": p.model,
-                        "state": circuit_state.value,
-                        "retryable": True,
-                        "reason": "circuit_open",
-                    }
+            if mode == "failover":
+                circuit_state = await self.circuit_breaker.state(
+                    p.name,
+                    recovery_timeout=p.recovery_timeout,
                 )
-                continue
+                if circuit_state == CircuitState.OPEN:
+                    skipped.append(
+                        {
+                            "provider": p.name,
+                            "model": p.model,
+                            "state": circuit_state.value,
+                            "retryable": True,
+                            "reason": "circuit_open",
+                        }
+                    )
+                    continue
 
             remaining = self.provider_gate.cooldown_remaining(p.name)
             if remaining > 0:
