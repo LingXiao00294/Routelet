@@ -919,6 +919,27 @@ class TestConfigApi:
             "pinned_model": {"provider": "p2", "model": "shared"},
         }
 
+    async def test_deleting_catalog_model_also_cleans_saved_order(
+        self, tmp_path, store
+    ):
+        path = _write_config(tmp_path)
+        _, client = await self._client(path, store)
+        seed = _raw_config()
+        seed["providers"]["p1"]["model_order"] = ["shared", "other"]
+
+        async with client:
+            assert (await client.put("/api/config", json=seed)).status_code == 200
+            body = (await client.get("/api/config")).json()
+            del body["providers"]["p1"]["models"]["shared"]
+            response = await client.put("/api/config", json=body)
+            saved = (await client.get("/api/config")).json()
+
+        assert response.status_code == 200, response.text
+        assert saved["providers"]["p1"]["model_order"] == ["other"]
+        assert saved["models"]["router"]["models"] == [
+            {"provider": "p2", "model": "shared"}
+        ]
+
     async def test_deleting_all_providers_clears_virtual_models(self, tmp_path, store):
         path = _write_config(tmp_path)
         app, client = await self._client(path, store)
