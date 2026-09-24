@@ -221,6 +221,105 @@ test("route reorder and pin survive publication", async ({ page }) => {
   ).toBe("ProviderB");
 });
 
+test("clicking a route model card switches the pinned model", async ({
+  page,
+}) => {
+  const state = await installApi(page);
+  await page.goto("/routes");
+  const route = page.locator(".route-card").first();
+  const target = route.getByRole("button", {
+    name: "将 ProviderB/model-b-pro 设为 coding-assistant 的固定模型",
+  });
+  await target.click();
+  await expect(target).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "检查并发布" }).click();
+  await page.getByRole("button", { name: "确认发布" }).click();
+  await expect(page.locator(".draft-bar")).toHaveCount(0);
+  expect(state.writes[0].models["coding-assistant"].pinned_model).toEqual({
+    provider: "ProviderB",
+    model: "model-b-pro",
+  });
+});
+
+test("provider model drag order persists with numeric model names", async ({
+  page,
+}) => {
+  const state = await installApi(page);
+  state.config.providers.ProviderA.models = {
+    ...state.config.providers.ProviderA.models,
+    "1": {},
+    "2": {},
+    "3": {},
+  };
+  state.config.providers.ProviderA.model_order = [
+    "1",
+    "2",
+    "3",
+    "model-a-pro",
+    "model-a-fast",
+  ];
+  await page.goto("/providers");
+  const card = page.locator(".provider-card").filter({ hasText: "ProviderA" });
+  await expect(
+    card.locator(".catalog-heading").getByRole("button", { name: "添加模型" }),
+  ).toBeVisible();
+  await expect(
+    card
+      .locator(".provider-card-foot")
+      .getByRole("button", { name: "添加模型" }),
+  ).toHaveCount(0);
+  const names = card.locator(".catalog-model span");
+  await expect(names).toHaveText([
+    "1",
+    "2",
+    "3",
+    "model-a-pro",
+    "model-a-fast",
+  ]);
+  const handle = await card
+    .locator(".catalog-row")
+    .first()
+    .locator(".route-drag-handle")
+    .boundingBox();
+  const third = await card.locator(".catalog-row").nth(2).boundingBox();
+  if (!handle || !third) throw new Error("Missing model drag geometry");
+  await page.mouse.move(
+    handle.x + handle.width / 2,
+    handle.y + handle.height / 2,
+  );
+  await page.mouse.down();
+  await page.mouse.move(handle.x + 80, third.y + third.height - 6, {
+    steps: 12,
+  });
+  await expect(card.locator(".route-drop-indicator")).toHaveText("放到第 3 位");
+  await page.mouse.up();
+  await expect(names).toHaveText([
+    "2",
+    "3",
+    "1",
+    "model-a-pro",
+    "model-a-fast",
+  ]);
+  await page.getByRole("button", { name: "检查并发布" }).click();
+  await page.getByRole("button", { name: "确认发布" }).click();
+  await expect(page.locator(".draft-bar")).toHaveCount(0);
+  expect(state.writes[0].providers.ProviderA.model_order).toEqual([
+    "2",
+    "3",
+    "1",
+    "model-a-pro",
+    "model-a-fast",
+  ]);
+  await page.reload();
+  await expect(card.locator(".catalog-model span")).toHaveText([
+    "2",
+    "3",
+    "1",
+    "model-a-pro",
+    "model-a-fast",
+  ]);
+});
+
 test("route dragging previews the destination, animates and persists the order", async ({
   page,
 }) => {

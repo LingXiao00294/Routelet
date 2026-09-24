@@ -101,6 +101,8 @@ def _toml_value(value: Any) -> str:
         return f'"{_toml_escape(value)}"'
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(_toml_value(item) for item in value) + "]"
     if isinstance(value, dict):
         fields = ", ".join(
             f"{_toml_key(str(key))} = {_toml_value(item)}"
@@ -262,9 +264,15 @@ def _remove_deleted_references(
         new_models: dict[str, Any] = candidate_providers[provider].get("models", {})
         if not isinstance(old_models, dict) or not isinstance(new_models, dict):
             raise ConfigError(f"Provider '{provider}' 的 models 必须是对象")
-        deleted_models.update(
-            (provider, model) for model in set(old_models) - set(new_models)
-        )
+        deleted = set(old_models) - set(new_models)
+        deleted_models.update((provider, model) for model in deleted)
+        order = candidate_providers[provider].get("model_order")
+        if deleted and isinstance(order, list):
+            candidate_providers[provider]["model_order"] = [
+                name
+                for name in order
+                if not (isinstance(name, str) and name in deleted)
+            ]
 
     def is_deleted(ref: Any) -> bool:
         if not isinstance(ref, dict):

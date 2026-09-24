@@ -5,6 +5,8 @@ import {
   cleanConfig,
   clone,
   newProvider,
+  modelOrder,
+  moveModel,
   normalizeConfig,
   refKey,
   removeCatalogEntry,
@@ -53,6 +55,24 @@ function config() {
   });
 }
 describe("configuration contracts", () => {
+  test("catalog order persists for numeric model names and follows additions and removals", () => {
+    const value = config();
+    value.providers.a.models = { "1": {}, "2": {}, "3": {} };
+    moveModel(value.providers.a, 2, 0);
+    expect(modelOrder(value.providers.a)).toEqual(["3", "1", "2"]);
+    expect(
+      modelOrder(
+        normalizeConfig(JSON.parse(JSON.stringify(value))).providers.a,
+      ),
+    ).toEqual(["3", "1", "2"]);
+    value.providers.a.models["4"] = {};
+    value.providers.a.model_order?.push("4");
+    removeCatalogEntry(value, "a", "1");
+    expect(modelOrder(value.providers.a)).toEqual(["3", "2", "4"]);
+    expect(
+      validateConfig(value).some((error) => error.includes("模型顺序")),
+    ).toBe(false);
+  });
   test("removing a catalog model cleans references and pins atomically without affecting a namesake", () => {
     const value = config();
     expect(affectedRoutes(value, "a", "shared")).toEqual(["mixed", "only"]);

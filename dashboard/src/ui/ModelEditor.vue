@@ -42,6 +42,7 @@ function apply() {
     }
   }
   provider.models = { ...provider.models, [key]: clone(prices) };
+  if (!props.model && provider.model_order) provider.model_order.push(key);
   emit("close");
 }
 </script>

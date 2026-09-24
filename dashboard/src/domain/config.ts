@@ -77,8 +77,31 @@ export function redactKeys(config: Config): Config {
 }
 export function catalog(config: Config): ModelRef[] {
   return Object.entries(config.providers).flatMap(([provider, item]) =>
-    Object.keys(item.models).map((model) => ({ provider, model })),
+    modelOrder(item).map((model) => ({ provider, model })),
   );
+}
+export function modelOrder(provider: Provider): string[] {
+  const names = Object.keys(provider.models);
+  return provider.model_order
+    ? [
+        ...provider.model_order.filter((name) => own(provider.models, name)),
+        ...names.filter((name) => !provider.model_order!.includes(name)),
+      ]
+    : names;
+}
+export function moveModel(provider: Provider, from: number, to: number): void {
+  const order = modelOrder(provider);
+  if (
+    from < 0 ||
+    to < 0 ||
+    from >= order.length ||
+    to >= order.length ||
+    from === to
+  )
+    return;
+  const [model] = order.splice(from, 1);
+  order.splice(to, 0, model);
+  provider.model_order = order;
 }
 export function removeCatalogEntry(
   config: Config,
@@ -86,7 +109,14 @@ export function removeCatalogEntry(
   model?: string,
 ) {
   if (model === undefined) delete config.providers[provider];
-  else delete config.providers[provider]?.models[model];
+  else {
+    const entry = config.providers[provider];
+    if (entry) {
+      delete entry.models[model];
+      if (entry.model_order)
+        entry.model_order = entry.model_order.filter((name) => name !== model);
+    }
+  }
   const removed = (ref: ModelRef) =>
     ref.provider === provider && (model === undefined || ref.model === model);
   for (const [name, route] of Object.entries(config.models)) {
@@ -199,6 +229,13 @@ export function validateConfig(config: Config, existing?: Config): string[] {
         if (prices[field.key] != null && !finite(prices[field.key], 0))
           errors.push(name + "/" + model + "：" + field.label + "价格无效");
     }
+    if (
+      provider.model_order &&
+      (provider.model_order.length !== Object.keys(provider.models).length ||
+        new Set(provider.model_order).size !== provider.model_order.length ||
+        provider.model_order.some((model) => !own(provider.models, model)))
+    )
+      errors.push(name + "：模型顺序必须包含每个实际模型一次");
   }
   for (const [name, route] of Object.entries(config.models)) {
     if (!name.trim()) errors.push("Router 名称不能为空");
