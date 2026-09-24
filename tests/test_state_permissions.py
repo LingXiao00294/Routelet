@@ -86,7 +86,8 @@ async def test_database_and_journal_remain_private_when_reopened(state_home):
         assert _mode(store.db_path) == 0o600
         assert _mode(state_home) == 0o700
         await store.conn.execute("UPDATE calls SET status = 'error'")
-        assert _mode(state_home / "calls.db-journal") == 0o600
+        assert _mode(state_home / "calls.db-wal") == 0o600
+        assert _mode(state_home / "calls.db-shm") == 0o600
         await store.conn.rollback()
     finally:
         await store.close()
