@@ -77,7 +77,7 @@ function remove() {
           {{
             workspace.draft.router.mode === "failover"
               ? "Provider 不可用时，按候选顺序自动尝试下一个模型。"
-              : "已关闭：仅请求固定模型，报错直接返回，不尝试备用 Provider。"
+              : "已关闭：仅请求固定模型，报错直接返回，不尝试备用 Provider，也不自动熔断。"
           }}
         </p>
       </div>

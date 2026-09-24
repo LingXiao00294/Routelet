@@ -38,7 +38,7 @@ function exportConfig() {
         <span class="stat-icon mint"><Icon name="shield" /></span>
         <h2>全局熔断保护</h2>
         <p>
-          连续失败后暂时跳过 Provider，给服务恢复的时间。Provider 的独立设置优先于全局配置。
+          自动故障转移开启时，连续失败后暂时跳过 Provider，给服务恢复的时间。Provider 的独立设置优先于全局配置。
         </p>
       </div>
       <div class="panel settings-form">
