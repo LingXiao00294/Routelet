@@ -41,7 +41,7 @@ export function sampleConfig(): Config {
           },
         },
       },
-      "ProviderC": {
+      ProviderC: {
         ...newProvider(),
         api_key: "sk-c********test",
         has_key: true,
@@ -148,6 +148,10 @@ export async function installApi(page: Page, empty = false) {
     offline: false,
     lastCalls: "",
     failedSave: false,
+    bodyRecording: { enabled: false, expires_at: null } as {
+      enabled: boolean;
+      expires_at: string | null;
+    },
   };
   await page.route("**/health", (route) =>
     route.fulfill({
@@ -183,6 +187,21 @@ export async function installApi(page: Page, empty = false) {
         return;
       }
       await route.fulfill({ json: state.config });
+      return;
+    }
+    if (path === "/api/recording/bodies") {
+      if (route.request().method() === "PUT") {
+        const { duration_minutes } = route.request().postDataJSON();
+        state.bodyRecording = {
+          enabled: true,
+          expires_at: new Date(
+            Date.now() + duration_minutes * 60_000,
+          ).toISOString(),
+        };
+      } else if (route.request().method() === "DELETE") {
+        state.bodyRecording = { enabled: false, expires_at: null };
+      }
+      await route.fulfill({ json: state.bodyRecording });
       return;
     }
     if (path === "/api/metrics/summary") {
@@ -260,7 +279,7 @@ export async function installApi(page: Page, empty = false) {
       await route.fulfill({
         json: path.endsWith("/reset")
           ? { status: "ok" }
-          : { ProviderA: "closed", ProviderB: "closed", "ProviderC": "closed" },
+          : { ProviderA: "closed", ProviderB: "closed", ProviderC: "closed" },
       });
       return;
     }

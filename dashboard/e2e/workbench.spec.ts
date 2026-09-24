@@ -397,6 +397,25 @@ test("remote conflict blocks writes and failed writes preserve drafts", async ({
   );
 });
 
+test("body recording requires confirmation and can be stopped immediately", async ({
+  page,
+}) => {
+  const state = await installApi(page);
+  await page.goto("/settings");
+  await expect(page.getByText("已关闭（默认）")).toBeVisible();
+  await page.getByLabel("开启时长").selectOption("60");
+  await page.getByRole("button", { name: "开启正文记录" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("记录响应会显著增加数据库大小");
+  await dialog.getByRole("button", { name: "确认开启" }).click();
+  await expect(page.getByText("已开启", { exact: true })).toBeVisible();
+  expect(state.bodyRecording.enabled).toBe(true);
+  expect(state.writes).toHaveLength(0);
+  await page.getByRole("button", { name: "立即关闭" }).click();
+  await expect(page.getByText("已关闭（默认）")).toBeVisible();
+  expect(state.bodyRecording.enabled).toBe(false);
+});
+
 test("playground select chevron stays inset and centered in both themes and viewport sizes", async ({
   page,
 }) => {

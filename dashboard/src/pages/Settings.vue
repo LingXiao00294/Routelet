@@ -1,9 +1,79 @@
 <script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useWorkspace } from "../state/workspace";
 import { cleanConfig, clone } from "../domain/config";
 import { downloadText } from "../domain/format";
+import { errorText, request } from "../services/http";
+import { notify } from "../state/notifications";
 import Icon from "../ui/Icon.vue";
+import Modal from "../ui/Modal.vue";
 const workspace = useWorkspace();
+interface BodyRecordingStatus {
+  enabled: boolean;
+  expires_at: string | null;
+}
+const recording = ref<BodyRecordingStatus | null>(null);
+const recordingDuration = ref(15);
+const recordingBusy = ref(false);
+const recordingError = ref("");
+const confirmRecording = ref(false);
+const recordingExpiry = computed(() =>
+  recording.value?.expires_at
+    ? new Date(recording.value.expires_at).toLocaleString()
+    : "",
+);
+let recordingPoll: ReturnType<typeof setInterval> | undefined;
+async function loadRecording() {
+  try {
+    recording.value = await request<BodyRecordingStatus>(
+      "/api/recording/bodies",
+    );
+    recordingError.value = "";
+  } catch (reason) {
+    recordingError.value = errorText(reason);
+  }
+}
+async function enableRecording() {
+  recordingBusy.value = true;
+  try {
+    recording.value = await request<BodyRecordingStatus>(
+      "/api/recording/bodies",
+      {
+        method: "PUT",
+        body: JSON.stringify({ duration_minutes: recordingDuration.value }),
+      },
+    );
+    recordingError.value = "";
+    confirmRecording.value = false;
+    notify("正文记录已开启，到期将自动关闭", "info");
+  } catch (reason) {
+    recordingError.value = errorText(reason);
+  } finally {
+    recordingBusy.value = false;
+  }
+}
+async function disableRecording() {
+  recordingBusy.value = true;
+  try {
+    recording.value = await request<BodyRecordingStatus>(
+      "/api/recording/bodies",
+      {
+        method: "DELETE",
+      },
+    );
+    recordingError.value = "";
+    notify("正文记录已关闭");
+  } catch (reason) {
+    recordingError.value = errorText(reason);
+  } finally {
+    recordingBusy.value = false;
+  }
+}
+onMounted(() => {
+  loadRecording();
+  recordingPoll = setInterval(loadRecording, 15000);
+});
+onUnmounted(() => clearInterval(recordingPoll));
 function exportConfig() {
   if (!workspace.base) return;
   const config = cleanConfig(clone(workspace.base));
@@ -38,7 +108,8 @@ function exportConfig() {
         <span class="stat-icon mint"><Icon name="shield" /></span>
         <h2>全局熔断保护</h2>
         <p>
-          自动故障转移开启时，连续失败后暂时跳过 Provider，给服务恢复的时间。Provider 的独立设置优先于全局配置。
+          自动故障转移开启时，连续失败后暂时跳过
+          Provider，给服务恢复的时间。Provider 的独立设置优先于全局配置。
         </p>
       </div>
       <div class="panel settings-form">
@@ -144,7 +215,9 @@ function exportConfig() {
             ><input
               v-model="workspace.draft.server.log_file"
               placeholder="留空则只输出到控制台"
-            /><small>相对路径基于 ~/.routelet/，留空则只输出到控制台。</small></label
+            /><small
+              >相对路径基于 ~/.routelet/，留空则只输出到控制台。</small
+            ></label
           ><label class="field full"
             ><span>单个日志文件大小上限</span>
             <div class="input-unit">
@@ -161,4 +234,87 @@ function exportConfig() {
       </div>
     </section>
   </fieldset>
+  <section class="settings-section">
+    <div class="settings-intro">
+      <span class="stat-icon amber"><Icon name="book" /></span>
+      <h2>调用正文记录</h2>
+      <p>临时保存请求与响应正文，用于排查具体调用。</p>
+    </div>
+    <div class="panel settings-form">
+      <p class="help">
+        当前状态：<strong>{{
+          recording?.enabled ? "已开启" : "已关闭（默认）"
+        }}</strong>
+        <span v-if="recording?.enabled">
+          · 将于 {{ recordingExpiry }} 自动关闭</span
+        >
+      </p>
+      <p class="help">
+        正文可能包含提示词、模型输出及其他敏感信息。记录响应会显著增加数据库大小；关闭后不会删除已有正文。
+      </p>
+      <div v-if="recordingError" class="alert error" role="alert">
+        {{ recordingError }}
+      </div>
+      <div class="form-grid">
+        <label class="field">
+          <span>开启时长</span>
+          <select v-model.number="recordingDuration" :disabled="recordingBusy">
+            <option :value="15">15 分钟</option>
+            <option :value="60">1 小时</option>
+            <option :value="240">4 小时</option>
+            <option :value="1440">24 小时</option>
+          </select>
+        </label>
+      </div>
+      <div class="heading-actions">
+        <button
+          class="button"
+          :disabled="recordingBusy"
+          @click="confirmRecording = true"
+        >
+          {{ recording?.enabled ? "延长记录时间" : "开启正文记录" }}
+        </button>
+        <button
+          v-if="recording?.enabled"
+          class="button danger"
+          :disabled="recordingBusy"
+          @click="disableRecording"
+        >
+          立即关闭
+        </button>
+      </div>
+    </div>
+  </section>
+  <Modal
+    v-if="confirmRecording"
+    title="确认开启调用正文记录？"
+    :busy="recordingBusy"
+    @close="confirmRecording = false"
+  >
+    <p>
+      接下来的
+      {{ recordingDuration }} 分钟会保存请求与响应正文，可能包含敏感内容。
+      <strong>记录响应会显著增加数据库大小。</strong>
+      到期或服务重启后自动关闭；已保存的正文不会自动清除。
+    </p>
+    <div v-if="recordingError" class="alert error" role="alert">
+      {{ recordingError }}
+    </div>
+    <template #footer>
+      <button
+        class="button"
+        :disabled="recordingBusy"
+        @click="confirmRecording = false"
+      >
+        取消
+      </button>
+      <button
+        class="button primary"
+        :disabled="recordingBusy"
+        @click="enableRecording"
+      >
+        {{ recordingBusy ? "正在开启…" : "确认开启" }}
+      </button>
+    </template>
+  </Modal>
 </template>

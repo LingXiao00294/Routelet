@@ -34,6 +34,55 @@ class TestCallRecorder:
         with pytest.raises(ValueError, match=message):
             CallRecorder(CallStore(":memory:"), **kwargs)
 
+    async def test_bodies_are_off_by_default_without_losing_token_estimate(self, store):
+        recorder = CallRecorder(store)
+        await recorder.start()
+        try:
+            assert recorder.body_recording_status() == {
+                "enabled": False,
+                "expires_at": None,
+            }
+            assert recorder.submit(
+                virtual_model="private",
+                status="success",
+                request_body={"messages": [{"content": "secret prompt"}]},
+                response_body={"content": [{"text": "secret response"}]},
+            )
+            await recorder.wait_idle(timeout=1)
+        finally:
+            await recorder.close()
+
+        calls, _ = await store.list_calls()
+        detail = await store.get_call(calls[0]["id"])
+        assert detail is not None
+        assert detail["request_body"] is None
+        assert detail["response_body"] is None
+        assert detail["request_tokens"] is not None
+
+    async def test_body_recording_timer_turns_it_off(self, monkeypatch):
+        recorder = CallRecorder(CallStore(":memory:"))
+        loop = asyncio.get_running_loop()
+        real_call_later = loop.call_later
+        callbacks = []
+
+        def capture_timer(delay, callback):
+            assert delay == 15 * 60
+            callbacks.append(callback)
+            return real_call_later(delay, callback)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(loop, "call_later", capture_timer)
+            status = recorder.enable_body_recording(15)
+        assert status["enabled"] is True
+        assert status["expires_at"] is not None
+        callbacks[0]()
+        assert recorder.body_recording_status() == {
+            "enabled": False,
+            "expires_at": None,
+        }
+        with pytest.raises(ValueError, match="duration"):
+            recorder.enable_body_recording(10)
+
     async def test_writer_continues_after_store_failure(self, store, monkeypatch):
         recorded: list[str] = []
 
@@ -171,6 +220,7 @@ class TestCallRecorder:
         response_text = "output" * MAX_PERSISTED_BODY_BYTES
         recorder = CallRecorder(store)
         await recorder.start()
+        recorder.enable_body_recording(15)
         try:
             assert recorder.submit(
                 virtual_model="large-body",

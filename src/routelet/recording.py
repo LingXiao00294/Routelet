@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Unpack
 
 import structlog
@@ -20,6 +22,7 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_QUEUE_SIZE = 1_000
 DEFAULT_SHUTDOWN_TIMEOUT = 5.0
+BODY_RECORDING_MINUTES = (15, 60, 240, 1440)
 
 
 @dataclass(slots=True)
@@ -54,6 +57,52 @@ class CallRecorder:
         self._worker: asyncio.Task[None] | None = None
         self._active_record: _QueuedCallRecord | None = None
         self._accepting = False
+        self._body_recording_deadline: float | None = None
+        self._body_recording_expires_at: str | None = None
+        self._body_recording_timer: asyncio.TimerHandle | None = None
+
+    def body_recording_status(self) -> dict[str, bool | str | None]:
+        """Return the temporary body-capture state, expiring it if needed."""
+        if (
+            self._body_recording_deadline is not None
+            and time.monotonic() >= self._body_recording_deadline
+        ):
+            self.disable_body_recording()
+        return {
+            "enabled": self._body_recording_deadline is not None,
+            "expires_at": self._body_recording_expires_at,
+        }
+
+    def enable_body_recording(
+        self, duration_minutes: int
+    ) -> dict[str, bool | str | None]:
+        """Capture request and response bodies for one bounded diagnostic window."""
+        if duration_minutes not in BODY_RECORDING_MINUTES:
+            raise ValueError("unsupported body recording duration")
+        self.disable_body_recording()
+        self._body_recording_deadline = time.monotonic() + duration_minutes * 60
+        self._body_recording_expires_at = (
+            datetime.now(timezone.utc) + timedelta(minutes=duration_minutes)
+        ).isoformat()
+        self._body_recording_timer = asyncio.get_running_loop().call_later(
+            duration_minutes * 60, self.disable_body_recording
+        )
+        logger.warning(
+            "call_record.body_enabled", expires_at=self._body_recording_expires_at
+        )
+        return self.body_recording_status()
+
+    def disable_body_recording(self) -> dict[str, bool | str | None]:
+        """Stop capturing future bodies without changing past records."""
+        was_enabled = self._body_recording_deadline is not None
+        if self._body_recording_timer is not None:
+            self._body_recording_timer.cancel()
+        self._body_recording_timer = None
+        self._body_recording_deadline = None
+        self._body_recording_expires_at = None
+        if was_enabled:
+            logger.info("call_record.body_disabled")
+        return {"enabled": False, "expires_at": None}
 
     async def start(self) -> None:
         """Start the background writer if it is not already running."""
@@ -91,7 +140,9 @@ class CallRecorder:
             )
             return False
         try:
-            payload = _prepare_payload_for_queue(record)
+            payload = _prepare_payload_for_queue(
+                record, include_bodies=bool(self.body_recording_status()["enabled"])
+            )
         except Exception:
             logger.error(
                 "call_record.serialization_failed",
@@ -135,6 +186,7 @@ class CallRecorder:
 
     async def close(self) -> None:
         """Stop accepting records, drain briefly, and stop the writer."""
+        self.disable_body_recording()
         self._accepting = False
         worker = self._worker
         if worker is None:
@@ -203,7 +255,9 @@ class CallRecorder:
             )
 
 
-def _prepare_payload_for_queue(record: CallRecordPayload) -> CallRecordPayload:
+def _prepare_payload_for_queue(
+    record: CallRecordPayload, *, include_bodies: bool
+) -> CallRecordPayload:
     """Serialize and bound large bodies before they enter the recorder queue.
 
     Request token estimation runs against the complete parsed body before it is
@@ -214,6 +268,10 @@ def _prepare_payload_for_queue(record: CallRecordPayload) -> CallRecordPayload:
     request_body = payload.get("request_body")
     if payload.get("request_tokens") is None and isinstance(request_body, dict):
         payload["request_tokens"] = _estimate_request_tokens(request_body)
-    payload["request_body"] = _serialize_call_body(request_body)
-    payload["response_body"] = _serialize_call_body(payload.get("response_body"))
+    payload["request_body"] = (
+        _serialize_call_body(request_body) if include_bodies else None
+    )
+    payload["response_body"] = (
+        _serialize_call_body(payload.get("response_body")) if include_bodies else None
+    )
     return payload
