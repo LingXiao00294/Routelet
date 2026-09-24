@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from math import isfinite
 from pathlib import Path
@@ -47,7 +48,11 @@ CREATE TABLE IF NOT EXISTS calls (
     failover_details TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_calls_summary ON calls(
+    timestamp DESC, id, virtual_model, provider_name, provider_model, attempt,
+    latency_ms, status, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, cost_usd
+);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_metrics_model ON calls(
     virtual_model, status, input_tokens, output_tokens, cache_read_tokens,
@@ -62,6 +67,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_metrics_day ON calls(
 );
 DROP INDEX IF EXISTS idx_calls_model;
 DROP INDEX IF EXISTS idx_calls_provider;
+DROP INDEX IF EXISTS idx_calls_timestamp;
 """
 
 CALL_SCHEMA_COLUMNS = frozenset(
@@ -211,6 +217,7 @@ class CallStore:
             else resolve_path(db_path, "calls.db")
         )
         self._conn: aiosqlite.Connection | None = None
+        self._wal_enabled = False
 
     @property
     def conn(self) -> aiosqlite.Connection:
@@ -242,6 +249,11 @@ class CallStore:
         conn = await aiosqlite.connect(str(self.db_path), factory=_MetricsConnection)
         try:
             conn.row_factory = aiosqlite.Row
+            if self.db_path != Path(":memory:"):
+                async with conn.execute("PRAGMA journal_mode=WAL") as cursor:
+                    row = await cursor.fetchone()
+                    self._wal_enabled = row is not None and row[0] == "wal"
+            await conn.execute("PRAGMA busy_timeout=5000")
             await conn.executescript(SCHEMA)
             await conn.commit()
         except Exception:
@@ -281,6 +293,22 @@ class CallStore:
         if self._conn:
             await self._conn.close()
             self._conn = None
+            self._wal_enabled = False
+
+    @asynccontextmanager
+    async def _reader(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Give each file-backed query an independent snapshot and worker."""
+        if not self._wal_enabled:
+            yield self.conn
+            return
+        uri = f"{self.db_path.resolve().as_uri()}?mode=ro"
+        conn = await aiosqlite.connect(uri, uri=True, factory=_MetricsConnection)
+        try:
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA busy_timeout=5000")
+            yield conn
+        finally:
+            await conn.close()
 
     async def record(self, **record: Unpack[CallRecordPayload]) -> str:
         """Persist one call and return its generated identifier.
@@ -352,10 +380,11 @@ class CallStore:
 
     async def get_call(self, call_id: str) -> dict | None:
         """Return the complete persisted detail for one call."""
-        async with self.conn.execute(
-            "SELECT * FROM calls WHERE id = ?", (call_id,)
-        ) as cursor:
-            row = await cursor.fetchone()
+        async with self._reader() as conn:
+            async with conn.execute(
+                "SELECT * FROM calls WHERE id = ?", (call_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
         return _finite_cost_fields(dict(row)) if row else None
 
     async def list_calls(
@@ -389,18 +418,20 @@ class CallStore:
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        conn = self.conn
-        count_row = list(
-            await conn.execute_fetchall(f"SELECT COUNT(*) FROM calls {where}", params)
-        )
-        total = count_row[0][0]
+        async with self._reader() as conn:
+            count_row = list(
+                await conn.execute_fetchall(
+                    f"SELECT COUNT(*) FROM calls {where}", params
+                )
+            )
+            total = count_row[0][0]
 
-        offset = (page - 1) * size
-        rows = await conn.execute_fetchall(
-            f"SELECT {_CALL_SUMMARY_SELECT} FROM calls {where} "
-            "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
-            [*params, size, offset],
-        )
+            offset = (page - 1) * size
+            rows = await conn.execute_fetchall(
+                f"SELECT {_CALL_SUMMARY_SELECT} FROM calls {where} "
+                "ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+                [*params, size, offset],
+            )
         return [_finite_cost_fields(dict(r)) for r in rows], total
 
     async def _aggregate_rows(
@@ -413,27 +444,28 @@ class CallStore:
         other aggregates. SQLite casts preserve its treatment of legacy REAL
         or text values; valid integer tokens remain exact throughout.
         """
-        try:
-            rows = await self.conn.execute_fetchall(query, parameters)
-        except sqlite3.OperationalError as exc:
-            if str(exc) != "integer overflow":
-                raise
-            for column in _TOKEN_COLUMNS:
-                query = query.replace(
-                    f"SUM({column})",
-                    f"routelet_token_sum(CASE WHEN TYPEOF({column}) = 'integer' "
-                    f"THEN {column} ELSE CAST({column} AS REAL) END)",
-                )
-            rows = await self.conn.execute_fetchall(query, parameters)
-            return [
-                {
-                    key: int(value)
-                    if key in _TOKEN_AGGREGATE_FIELDS and isinstance(value, str)
-                    else value
-                    for key, value in dict(row).items()
-                }
-                for row in rows
-            ]
+        async with self._reader() as conn:
+            try:
+                rows = await conn.execute_fetchall(query, parameters)
+            except sqlite3.OperationalError as exc:
+                if str(exc) != "integer overflow":
+                    raise
+                for column in _TOKEN_COLUMNS:
+                    query = query.replace(
+                        f"SUM({column})",
+                        f"routelet_token_sum(CASE WHEN TYPEOF({column}) = 'integer' "
+                        f"THEN {column} ELSE CAST({column} AS REAL) END)",
+                    )
+                rows = await conn.execute_fetchall(query, parameters)
+                return [
+                    {
+                        key: int(value)
+                        if key in _TOKEN_AGGREGATE_FIELDS and isinstance(value, str)
+                        else value
+                        for key, value in dict(row).items()
+                    }
+                    for row in rows
+                ]
         return [dict(row) for row in rows]
 
     async def summary(self) -> dict:
@@ -491,13 +523,14 @@ class CallStore:
         return [_finite_cost_fields(dict(r)) for r in rows]
 
     async def by_provider(self) -> list[dict]:
-        rows = await self.conn.execute_fetchall(
-            """SELECT
+        async with self._reader() as conn:
+            rows = await conn.execute_fetchall(
+                """SELECT
                 provider_name AS provider,
                 COUNT(*) AS count,
                 SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success_count
             FROM calls GROUP BY provider_name"""
-        )
+            )
         return [dict(r) for r in rows]
 
     async def by_real_model(self) -> list[dict]:

@@ -397,6 +397,66 @@ test("remote conflict blocks writes and failed writes preserve drafts", async ({
   );
 });
 
+test("body recording requires confirmation and can be stopped immediately", async ({
+  page,
+}) => {
+  const state = await installApi(page);
+  await page.goto("/settings");
+  await expect(page.getByText("已关闭（默认）")).toBeVisible();
+  await page.getByLabel("开启时长").selectOption("60");
+  await page.getByRole("button", { name: "开启正文记录" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("记录响应会显著增加数据库大小");
+  await dialog.getByRole("button", { name: "确认开启" }).click();
+  await expect(page.getByText("已开启", { exact: true })).toBeVisible();
+  expect(state.bodyRecording.enabled).toBe(true);
+  expect(state.writes).toHaveLength(0);
+  await page.getByRole("button", { name: "立即关闭" }).click();
+  await expect(page.getByText("已关闭（默认）")).toBeVisible();
+  expect(state.bodyRecording.enabled).toBe(false);
+});
+
+test("stale recording status cannot overwrite a successful switch", async ({
+  page,
+}) => {
+  await installApi(page);
+  let releaseGet!: () => void;
+  const heldGet = new Promise<void>((resolve) => (releaseGet = resolve));
+  let markGetStarted!: () => void;
+  const getStarted = new Promise<void>((resolve) => (markGetStarted = resolve));
+  let intercepted = false;
+  await page.route("**/api/recording/bodies", async (route) => {
+    if (route.request().method() !== "GET" || intercepted) {
+      await route.fallback();
+      return;
+    }
+    intercepted = true;
+    markGetStarted();
+    await heldGet;
+    await route.fulfill({ json: { enabled: false, expires_at: null } });
+  });
+  await page.goto("/settings");
+  await getStarted;
+  await page.getByRole("button", { name: "开启正文记录" }).click();
+  await page
+    .getByRole("dialog")
+    .getByRole("button", { name: "确认开启" })
+    .click();
+  await expect(page.getByText("已开启", { exact: true })).toBeVisible();
+  const staleResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/recording/bodies") &&
+      response.request().method() === "GET",
+  );
+  releaseGet();
+  await staleResponse;
+  await expect(page.getByText("已开启", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "重设记录期限" }).click();
+  await expect(page.getByRole("dialog")).toContainText(
+    "可能早于当前的自动关闭时间",
+  );
+});
+
 test("playground select chevron stays inset and centered in both themes and viewport sizes", async ({
   page,
 }) => {

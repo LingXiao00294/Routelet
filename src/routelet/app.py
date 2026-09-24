@@ -8,13 +8,14 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Mapping
 from contextlib import asynccontextmanager
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 import structlog
 from anyio import CancelScope
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 from structlog.contextvars import (
     bind_contextvars,
     bound_contextvars,
@@ -45,6 +46,10 @@ from routelet.routing import (
 from routelet.sse import SSEDecoder, SSEEvent
 
 logger = structlog.get_logger(__name__)
+
+
+class BodyRecordingRequest(BaseModel):
+    duration_minutes: Literal[15, 60, 240, 1440]
 
 
 def _calculate_cost_usd(usage: Mapping[str, Any], outcome: Mapping[str, Any]) -> float:
@@ -327,6 +332,18 @@ def create_app(
                 )
         states = await engine.circuit_breaker.get_all_states(timeouts)
         return {name: state.value for name, state in states.items()}
+
+    @app.get("/api/recording/bodies")
+    async def get_body_recording():
+        return recorder.body_recording_status()
+
+    @app.put("/api/recording/bodies")
+    async def enable_body_recording(body: BodyRecordingRequest):
+        return recorder.enable_body_recording(body.duration_minutes)
+
+    @app.delete("/api/recording/bodies")
+    async def disable_body_recording():
+        return recorder.disable_body_recording()
 
     @app.post("/api/circuit-breaker/{provider:path}/reset")
     async def reset_circuit_breaker(provider: str):

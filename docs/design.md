@@ -271,7 +271,11 @@ CREATE TABLE IF NOT EXISTS calls (
     failover_details TEXT                  -- 失败尝试链 JSON
 );
 
-CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls(timestamp DESC);
+CREATE INDEX IF NOT EXISTS idx_calls_summary ON calls(
+    timestamp DESC, id, virtual_model, provider_name, provider_model, attempt,
+    latency_ms, status, input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens, cost_usd
+);
 CREATE INDEX IF NOT EXISTS idx_calls_status ON calls(status);
 CREATE INDEX IF NOT EXISTS idx_calls_metrics_model ON calls(
     virtual_model, status, input_tokens, output_tokens, cache_read_tokens,
@@ -299,7 +303,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_metrics_day ON calls(
 
 ### 8. api/metrics.py — 数据查询 API
 
-通过 `CallStore` 提供累计指标、按虚拟模型 / Provider / 实际模型分组、每日趋势和分页调用查询。统计使用覆盖索引读取状态、Token 和费用，按 UTC 日期的表达式索引支持每日分组；索引不含调用正文。列表仅取摘要字段，详情端点再读取正文与故障转移链，减少列表查询的数据量。真实模型分组和筛选始终使用独立的 Provider / model 字段。端点和参数见 [API 参考](api.md#调用记录与统计)。
+通过 `CallStore` 提供累计指标、按虚拟模型 / Provider / 实际模型分组、每日趋势和分页调用查询。文件数据库使用 WAL 和独立只读连接，避免后台写入与并发面板查询共用同一工作队列；内存数据库仍使用单连接。统计使用覆盖索引读取状态、Token 和费用，按 UTC 日期的表达式索引支持每日分组；调用列表也使用不含正文的覆盖索引。列表仅取摘要字段，详情端点再读取正文与故障转移链，减少列表查询的数据量。正文持久化默认关闭，可通过运行时限时开关开启，到期或重启自动关闭；用量仍从完整请求估算。真实模型分组和筛选始终使用独立的 Provider / model 字段。端点和参数见 [API 参考](api.md#调用记录与统计)。
 
 ### 9. monitoring.py — 日志
 

@@ -161,6 +161,9 @@ onUnmounted(() => controller.abort());
           <span>{{ tab === "request" ? "REQUEST BODY" : "RESPONSE BODY" }}</span
           ><button
             class="button small"
+            :disabled="
+              !(tab === 'request' ? call.request_body : call.response_body)
+            "
             @click="
               copyText(
                 prettyJson(
@@ -172,11 +175,18 @@ onUnmounted(() => controller.abort());
             <Icon name="copy" :size="14" />复制
           </button>
         </div>
-        <pre class="code-block">{{
-          prettyJson(tab === "request" ? call.request_body : call.response_body)
-        }}</pre>
-        <p v-if="tab === 'response' && !call.response_body" class="help">
-          流式响应可能没有持久化正文，用量与状态仍可在「执行与用量」中查看。
+        <pre
+          v-if="tab === 'request' ? call.request_body : call.response_body"
+          class="code-block"
+          >{{
+            prettyJson(
+              tab === "request" ? call.request_body : call.response_body,
+            )
+          }}</pre>
+        <p v-else class="help">
+          此次调用未记录{{
+            tab === "request" ? "请求" : "响应"
+          }}正文。用量与状态仍可在「执行与用量」中查看。
         </p></template
       >
     </template>

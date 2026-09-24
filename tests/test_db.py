@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -22,6 +24,72 @@ PRICE_SNAPSHOT_COLUMNS = (
     "cache_read_price_per_million",
     "cache_write_price_per_million",
 )
+
+
+async def test_wal_reader_does_not_block_writer_and_list_uses_covering_index(tmp_path):
+    store = CallStore(str(tmp_path / "calls.db"))
+    await store.init()
+    try:
+        assert (
+            list(await store.conn.execute_fetchall("PRAGMA journal_mode"))[0][0]
+            == "wal"
+        )
+        first = await store.record(
+            virtual_model="router",
+            status="success",
+            request_body={"large": "x" * 50000},
+        )
+        async with store._reader() as reader:
+            await reader.execute("BEGIN")
+            assert (
+                list(await reader.execute_fetchall("SELECT COUNT(*) FROM calls"))[0][0]
+                == 1
+            )
+            await asyncio.wait_for(
+                store.record(virtual_model="router", status="success"), timeout=1
+            )
+            await reader.rollback()
+        calls, total = await store.list_calls()
+        assert total == 2
+        assert any(row["id"] == first for row in calls)
+        columns = ", ".join(CALL_SUMMARY_COLUMNS)
+        plan = await store.conn.execute_fetchall(
+            f"EXPLAIN QUERY PLAN SELECT {columns} FROM calls "
+            "ORDER BY timestamp DESC LIMIT 20"
+        )
+        assert any("USING COVERING INDEX idx_calls_summary" in row[3] for row in plan)
+    finally:
+        await store.close()
+
+
+async def test_dashboard_reads_do_not_queue_behind_writer_connection(tmp_path):
+    store = CallStore(str(tmp_path / "calls.db"))
+    await store.init()
+    started = threading.Event()
+    release = threading.Event()
+
+    def hold_writer() -> int:
+        started.set()
+        release.wait(timeout=5)
+        return 1
+
+    try:
+        await store.record(virtual_model="router", status="success")
+        await store.conn.create_function("hold_writer", 0, hold_writer)
+        blocked = asyncio.create_task(
+            store.conn.execute_fetchall("SELECT hold_writer()")
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+        try:
+            summary, (calls, total) = await asyncio.wait_for(
+                asyncio.gather(store.summary(), store.list_calls()), timeout=2
+            )
+            assert summary["total_calls"] == total == len(calls) == 1
+        finally:
+            release.set()
+            await blocked
+    finally:
+        await store.close()
 
 
 async def test_default_database_uses_home_and_creates_parent(

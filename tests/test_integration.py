@@ -947,6 +947,24 @@ class TestHealth:
         assert resp.json() == {"status": "ok"}
 
 
+async def test_body_recording_runtime_api(client, recorder):
+    path = "/api/recording/bodies"
+    assert (await client.get(path)).json() == {
+        "enabled": False,
+        "expires_at": None,
+    }
+    assert (await client.put(path, json={"duration_minutes": 10})).status_code == 422
+    enabled = await client.put(path, json={"duration_minutes": 15})
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert enabled.json()["expires_at"] is not None
+    assert (await client.get(path)).json() == enabled.json()
+    disabled = await client.delete(path)
+    assert disabled.status_code == 200
+    assert disabled.json() == {"enabled": False, "expires_at": None}
+    assert recorder.body_recording_status() == disabled.json()
+
+
 class TestModels:
     @pytest.mark.asyncio
     async def test_list_models(self, client):
@@ -1151,6 +1169,7 @@ class TestMessages:
         self, app_config, store, recorder, stream, escaped_unicode
     ):
         app_config.router.mode = "failover"
+        recorder.enable_body_recording(15)
         body = {
             "model": "test-router",
             "stream": stream,
@@ -1355,6 +1374,7 @@ class TestMessages:
         self, app_config, store, recorder
     ):
         app_config.router.mode = "failover"
+        recorder.enable_body_recording(15)
         seen: dict[str, object] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
