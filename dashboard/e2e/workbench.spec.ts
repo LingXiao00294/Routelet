@@ -302,6 +302,7 @@ test("provider model drag order persists with numeric model names", async ({
   ]);
   await page.getByRole("button", { name: "检查并发布" }).click();
   await page.getByRole("button", { name: "确认发布" }).click();
+  await expect(page.locator(".draft-bar")).toHaveCount(0);
   expect(state.writes[0].providers.ProviderA.model_order).toEqual([
     "2",
     "3",
